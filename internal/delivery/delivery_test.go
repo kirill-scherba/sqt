@@ -42,6 +42,7 @@ func chaosServer(t *testing.T, network string) (*sqt.Server, *Server, func()) {
 
 	ds := NewServer()
 
+	go ds.Run(ctx)
 	go func() { _ = srv.Run(ctx) }()
 	go func() {
 		for p := range srv.Peers() {

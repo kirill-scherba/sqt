@@ -82,9 +82,9 @@ func NewClient(cfg ClientConfig) *Client { return &Client{Config: cfg} }
 // must return when the peer is closed or ctx is done; Run then reconnects.
 func (c *Client) Run(ctx context.Context, handler func(context.Context, *Peer)) error {
 	const (
-		minDelay    = time.Second
-		maxDelay    = 30 * time.Second
-		stableAfter = time.Minute
+		minDelay    = 500 * time.Millisecond
+		maxDelay    = 3 * time.Second
+		stableAfter = 10 * time.Second
 	)
 
 	delay := minDelay

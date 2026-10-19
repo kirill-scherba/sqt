@@ -10,8 +10,8 @@ import (
 
 // Heartbeat timings. They are variables so tests can shorten them.
 var (
-	heartbeatInterval = 30 * time.Second
-	heartbeatTimeout  = 10 * time.Second
+	heartbeatInterval = 5 * time.Second
+	heartbeatTimeout  = 3 * time.Second
 )
 
 // Peer is one end of an established connection. The same type is used by the

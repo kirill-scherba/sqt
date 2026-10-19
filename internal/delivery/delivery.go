@@ -15,7 +15,16 @@ import (
 	"github.com/kirill-scherba/sqt"
 )
 
-const sendTimeout = 5 * time.Second
+const (
+	sendTimeout = 5 * time.Second
+	retryAfter  = 3 * time.Second
+)
+
+// entry is a queued command and the time of the last delivery attempt.
+type entry struct {
+	text   string
+	sentAt time.Time
+}
 
 // Wire messages.
 type helloMsg struct {
@@ -38,7 +47,7 @@ type ackMsg struct {
 type Server struct {
 	mu      sync.Mutex
 	next    uint64
-	pending map[string]map[uint64]string
+	pending map[string]map[uint64]entry
 	peers   map[string]*sqt.Peer
 
 	// OnData is called for messages from a client that are not acks.
@@ -49,7 +58,7 @@ type Server struct {
 func NewServer() *Server {
 	return &Server{
 		next:    1,
-		pending: make(map[string]map[uint64]string),
+		pending: make(map[string]map[uint64]entry),
 		peers:   make(map[string]*sqt.Peer),
 	}
 }
@@ -62,14 +71,19 @@ func (s *Server) Enqueue(name, text string) uint64 {
 	s.next++
 
 	if s.pending[name] == nil {
-		s.pending[name] = make(map[uint64]string)
+		s.pending[name] = make(map[uint64]entry)
 	}
-	s.pending[name][id] = text
+	s.pending[name][id] = entry{text: text}
 	peer := s.peers[name]
 	s.mu.Unlock()
 
 	if peer != nil {
-		s.send(peer, id, text)
+		if err := s.send(name, peer, id, text); err != nil {
+			// The peer is dead but the transport has not noticed yet. Closing
+			// it forces an immediate reconnect instead of waiting for the
+			// heartbeat.
+			_ = peer.Close()
+		}
 	}
 
 	return id
@@ -107,8 +121,8 @@ func (s *Server) Handle(ctx context.Context, peer *sqt.Peer) {
 	s.mu.Lock()
 	s.peers[name] = peer
 	pending := make(map[uint64]string, len(s.pending[name]))
-	for id, text := range s.pending[name] {
-		pending[id] = text
+	for id, e := range s.pending[name] {
+		pending[id] = e.text
 	}
 	s.mu.Unlock()
 
@@ -121,7 +135,10 @@ func (s *Server) Handle(ctx context.Context, peer *sqt.Peer) {
 	}()
 
 	for id, text := range pending {
-		s.send(peer, id, text)
+		if err := s.send(name, peer, id, text); err != nil {
+			_ = peer.Close()
+			return
+		}
 	}
 
 	for {
@@ -167,15 +184,75 @@ func (s *Server) hello(ctx context.Context, peer *sqt.Peer) (string, bool) {
 	}
 }
 
-func (s *Server) send(peer *sqt.Peer, id uint64, text string) {
+// Run starts the retry loop. Commands that were not acknowledged are sent
+// again every retryAfter, independently of the connection state: a silent
+// dead path does not stop delivery, it only delays it.
+func (s *Server) Run(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.retry()
+		}
+	}
+}
+
+func (s *Server) retry() {
+	type job struct {
+		name string
+		peer *sqt.Peer
+		id   uint64
+		text string
+	}
+
+	now := time.Now()
+
+	s.mu.Lock()
+	var jobs []job
+	for name, entries := range s.pending {
+		peer := s.peers[name]
+		if peer == nil {
+			continue
+		}
+		for id, e := range entries {
+			if now.Sub(e.sentAt) >= retryAfter {
+				jobs = append(jobs, job{name: name, peer: peer, id: id, text: e.text})
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	for _, j := range jobs {
+		if err := s.send(j.name, j.peer, j.id, j.text); err != nil {
+			_ = j.peer.Close()
+		}
+	}
+}
+
+func (s *Server) send(name string, peer *sqt.Peer, id uint64, text string) error {
 	msg, err := json.Marshal(cmdMsg{Cmd: id, Text: text})
 	if err != nil {
-		return
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
-	_ = peer.Send(ctx, msg)
+	err = peer.Send(ctx, msg)
 	cancel()
+
+	if name != "" {
+		s.mu.Lock()
+		if e, ok := s.pending[name][id]; ok {
+			e.sentAt = time.Now()
+			s.pending[name][id] = e
+		}
+		s.mu.Unlock()
+	}
+
+	return err
 }
 
 // Client identifies itself by name on every connection, executes each command

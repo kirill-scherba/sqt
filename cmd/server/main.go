@@ -55,6 +55,8 @@ func main() {
 		log.Printf("data from %s: %s", name, text)
 	}
 
+	go queue.Run(ctx)
+
 	log.Printf("listening on %s %s", srv.Network(), srv.Addr())
 
 	go func() {
