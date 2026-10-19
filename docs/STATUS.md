@@ -39,6 +39,8 @@
 
 - TCP/TLS transport (`-network tcp`): one connection, length-prefixed frames,
   serialized writes. The same `Peer` API; tests run against both transports.
+- Timers tuned for interactive use: heartbeat 5s/3s, reconnect backoff
+  500ms..3s, delivery retry every 3s.
 - `internal/delivery`: reference at-least-once delivery (hello/queue/ack/dedup)
   used by both test applications. Chaos test drops the connection every 250ms
   while commands are enqueued; each command executes exactly once on QUIC and

@@ -55,8 +55,8 @@ this library targets.
 
 ## Liveness
 
-`Peer` runs a heartbeat independent of the transport: after 30 seconds without
-outgoing traffic it sends a `ping` and expects a `pong` within 10 seconds.
+`Peer` runs a heartbeat independent of the transport: after 5 seconds without
+outgoing traffic it sends a `ping` and expects a `pong` within 3 seconds.
 This exists because packet-level liveness is not enough. QUIC PING frames and
 TCP keepalive probes are empty packets; some networks only reset their idle
 timers on payload-bearing traffic and silently drop the flow otherwise.
@@ -70,8 +70,8 @@ A missing pong closes the connection with `ErrHeartbeatTimeout`, which gives
 
 `Client.Run` owns the reconnect loop, not the transports: dial, hand the peer
 to the handler, wait for the handler to return, close, back off, repeat.
-Backoff starts at one second, doubles to thirty, carries up to 20% jitter and
-resets after a minute of stable work. Messages in flight during a disconnect
+Backoff starts at 500ms, doubles to three seconds, carries up to 20% jitter and
+resets after ten seconds of stable work. Messages in flight during a disconnect
 are lost, and commands may be delivered twice after a reconnect; the library
 does not pretend otherwise. Stable identity is an application concern: the
 client sends its name in the first message, the server maps it to the current
@@ -84,7 +84,10 @@ delivery is a separate layer (`internal/delivery`) because it needs semantics
 the transport cannot provide — a stable client identity, a queue that outlives
 a connection, acknowledgements and deduplication.
 
-The failure model is "any connection can die at any moment". Under that model
+The failure model is "any connection can die at any moment". The delivery
+server does not rely on the transport noticing that: it retries every
+unacknowledged command after three seconds and closes a peer whose send fails,
+so a silent dead path costs seconds, not tens of seconds. Under that model
 the only useful guarantee is at-least-once with idempotent execution: a command
 may arrive twice, but the client executes it once. The reference layer keeps
 the seen ids in memory, which covers reconnects; persistence across process

@@ -84,8 +84,8 @@ silently die while the server has nothing to send.
 
 ## Heartbeat and reconnect
 
-Every peer sends a `ping` frame after 30 seconds without outgoing traffic and
-expects a `pong` within 10 seconds. If the pong does not arrive, the connection
+Every peer sends a `ping` frame after 5 seconds without outgoing traffic and
+expects a `pong` within 3 seconds. If the pong does not arrive, the connection
 is closed with `ErrHeartbeatTimeout`. Ping and pong frames are handled by the
 library and never reach `Messages()`.
 
@@ -111,8 +111,8 @@ client.Run(ctx, func(ctx context.Context, peer *sqt.Peer) {
 })
 ```
 
-Backoff starts at one second, doubles to thirty and carries up to 20% jitter;
-it resets after a minute of stable work. `Run` calls the handler once per
+Backoff starts at 500ms, doubles to three seconds and carries up to 20%
+jitter; it resets after ten seconds of stable work. `Run` calls the handler once per
 established connection, so the handler must return when the peer is closed.
 The library does not queue messages typed while disconnected and does not
 deduplicate commands; those are application concerns.
@@ -130,7 +130,9 @@ not part of the public API.
 - the server keeps a queue per name and sends everything unacknowledged when
   the client says hello;
 - the client executes a command once (deduplication by id) and sends `ack{id}`;
-- the server removes the command only on ack.
+- the server removes the command only on ack;
+- the server retries unacknowledged commands every 3 seconds and closes a peer
+  whose send fails, which forces an immediate reconnect.
 
 A lost connection or a lost ack causes a resend, not a lost command. The
 deduplication set lives in memory: it survives reconnects but not a client
