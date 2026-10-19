@@ -87,7 +87,10 @@ func main() {
 
 			case line, ok := <-input:
 				if !ok {
-					return
+					// stdin is closed (headless run): stop reading it but keep
+					// the connection alive for commands from the server.
+					input = nil
+					continue
 				}
 				if !send(ctx, peer, line) {
 					return
