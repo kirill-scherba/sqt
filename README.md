@@ -163,6 +163,12 @@ another port (`:443` is treated best by middleboxes), a shorter keepalive
 filtering is persistent, QUIC cannot get through at all and the transport has
 to be TCP/TLS.
 
+Some networks pass the first few packets and then drop the flow. This was
+observed on Hetzner paths from Russia: the handshake and the first exchange
+succeed, then the client receives nothing and reports an idle timeout while
+keepalive keeps sending PINGs. No timer tuning helps in that case; the options
+are a tunnel, another provider, or a TCP/TLS transport.
+
 ## Limits
 
 - Messages are opaque byte slices, at most 1 MiB (`sqt.MaxMessageSize`).

@@ -22,6 +22,10 @@
   exchange and reports `timeout: no recent network activity`. The QUIC layer
   stops receiving packets, so the cause is the UDP path (filtering, NAT or
   provider policy), not the application.
+- Confirmed environment: on a Hetzner path from Russia the DPI passes a few
+  packets and then cuts the flow. The same client works through a tunnel to a
+  neighbouring Hetzner host over IPv6. Keepalive, IPv4/IPv6 and bidirectional
+  streams were verified independently, so the transport itself is healthy.
 - Unit/integration tests: `go test ./...` green.
 - End-to-end manual run verified in both directions: client `from client` →
   server, server `1, hi there` → client, client reply → server, disconnect
