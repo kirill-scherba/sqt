@@ -76,9 +76,10 @@ ordinary HTTPS, so it survives networks that recognise and throttle QUIC.
 ./bin/sqt-client -network tcp -addr server.example.com:4433
 ```
 
-The message API is identical; only the transport changes. Keepalive and idle
-timeouts apply to QUIC only: TCP connections are kept alive by the operating
-system and the application's own traffic.
+The message API is identical; only the transport changes. QUIC keepalive and
+idle timeouts are configurable; on TCP the transport enables the operating
+system keepalive (30s) so an idle connection keeps its NAT mapping and does not
+silently die while the server has nothing to send.
 
 ## Test applications
 

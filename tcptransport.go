@@ -25,7 +25,26 @@ type tcpTransport struct {
 }
 
 func newTCPTransport(conn net.Conn) *tcpTransport {
+	enableKeepAlive(conn)
 	return &tcpTransport{conn: conn, r: bufio.NewReader(conn)}
+}
+
+// enableKeepAlive asks the kernel to probe an idle TCP connection. Without it
+// a NAT or firewall may silently drop the mapping while the application has
+// nothing to send, and a server that pushes commands hours later would write
+// into a dead connection.
+func enableKeepAlive(conn net.Conn) {
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		conn = tlsConn.NetConn()
+	}
+
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+
+	_ = tcpConn.SetKeepAlive(true)
+	_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 }
 
 func (t *tcpTransport) Send(ctx context.Context, msg []byte) error {
