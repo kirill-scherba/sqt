@@ -112,6 +112,10 @@ func (c *Client) Run(ctx context.Context, handler func(context.Context, *Peer)) 
 
 		started := time.Now()
 		handler(ctx, peer)
+
+		// Capture the reason before Close, which marks the shutdown as local
+		// and clears Err.
+		peerErr := peer.Err()
 		_ = peer.Close()
 
 		if ctx.Err() != nil {
@@ -124,7 +128,7 @@ func (c *Client) Run(ctx context.Context, handler func(context.Context, *Peer)) 
 
 		wait := jitter(delay)
 		if c.OnRetry != nil {
-			c.OnRetry(peer.Err(), wait)
+			c.OnRetry(peerErr, wait)
 		}
 		if !sleepCtx(ctx, wait) {
 			return nil
