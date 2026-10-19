@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -19,6 +20,12 @@ type ServerConfig struct {
 	// TLSConfig must contain at least one certificate. NextProtos is set by
 	// the package.
 	TLSConfig *tls.Config
+	// KeepAlivePeriod is how often a PING is sent when the connection is
+	// idle. Zero means DefaultKeepAlivePeriod.
+	KeepAlivePeriod time.Duration
+	// IdleTimeout is offered to the peer; the effective value is the minimum
+	// of both sides. Zero means DefaultIdleTimeout.
+	IdleTimeout time.Duration
 }
 
 // Server accepts QUIC connections and keeps track of connected peers.
@@ -44,7 +51,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	tlsConf := cfg.TLSConfig.Clone()
 	tlsConf.NextProtos = []string{ALPN}
 
-	ln, err := quic.ListenAddr(cfg.Addr, tlsConf, defaultQUICConfig())
+	ln, err := quic.ListenAddr(cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
 	if err != nil {
 		return nil, err
 	}

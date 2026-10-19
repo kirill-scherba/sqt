@@ -26,6 +26,8 @@ func main() {
 	certFile := flag.String("cert", "", "TLS certificate file (PEM)")
 	keyFile := flag.String("key", "", "TLS key file (PEM)")
 	consoleMode := flag.String("console", "auto", `console mode: "auto" (only with a terminal), "on", "off"`)
+	keepAlive := flag.Duration("keepalive", 0, "QUIC keepalive period (0 = 15s)")
+	idle := flag.Duration("idle", 0, "QUIC idle timeout (0 = 60s)")
 	flag.Parse()
 
 	tlsConf, err := tlsConfig(*certFile, *keyFile)
@@ -33,7 +35,12 @@ func main() {
 		log.Fatalf("tls: %v", err)
 	}
 
-	srv, err := sqt.NewServer(sqt.ServerConfig{Addr: *addr, TLSConfig: tlsConf})
+	srv, err := sqt.NewServer(sqt.ServerConfig{
+		Addr:            *addr,
+		TLSConfig:       tlsConf,
+		KeepAlivePeriod: *keepAlive,
+		IdleTimeout:     *idle,
+	})
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}

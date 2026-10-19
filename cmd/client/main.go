@@ -21,6 +21,8 @@ func main() {
 	addr := flag.String("addr", "localhost:4433", "server address (host:port)")
 	insecure := flag.Bool("insecure", false, "skip TLS certificate verification")
 	reply := flag.String("reply", "", `reply text; empty means "reply: <message>"`)
+	keepAlive := flag.Duration("keepalive", 0, "QUIC keepalive period (0 = 15s)")
+	idle := flag.Duration("idle", 0, "QUIC idle timeout (0 = 60s)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -32,15 +34,29 @@ func main() {
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	peer, err := sqt.Dial(dialCtx, sqt.ClientConfig{Addr: *addr, TLSConfig: tlsConf})
+	peer, err := sqt.Dial(dialCtx, sqt.ClientConfig{
+		Addr:            *addr,
+		TLSConfig:       tlsConf,
+		KeepAlivePeriod: *keepAlive,
+		IdleTimeout:     *idle,
+	})
 	cancel()
 	if err != nil {
 		log.Fatalf("dial: %v", err)
 	}
 	defer peer.Close()
 
+	effectiveKeepAlive := *keepAlive
+	if effectiveKeepAlive == 0 {
+		effectiveKeepAlive = sqt.DefaultKeepAlivePeriod
+	}
+	effectiveIdle := *idle
+	if effectiveIdle == 0 {
+		effectiveIdle = sqt.DefaultIdleTimeout
+	}
+
 	log.Printf("connected to %s (keepalive %s, idle timeout %s)",
-		*addr, sqt.DefaultKeepAlivePeriod, sqt.DefaultIdleTimeout)
+		*addr, effectiveKeepAlive, effectiveIdle)
 	connectedAt := time.Now()
 
 	go func() {

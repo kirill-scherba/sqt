@@ -51,10 +51,16 @@ const (
 	defaultPeersBuffer    = 64
 )
 
-func defaultQUICConfig() *quic.Config {
+func quicConfig(keepAlive, idle time.Duration) *quic.Config {
+	if keepAlive == 0 {
+		keepAlive = DefaultKeepAlivePeriod
+	}
+	if idle == 0 {
+		idle = DefaultIdleTimeout
+	}
 	return &quic.Config{
-		KeepAlivePeriod:    DefaultKeepAlivePeriod,
-		MaxIdleTimeout:     DefaultIdleTimeout,
+		KeepAlivePeriod:    keepAlive,
+		MaxIdleTimeout:     idle,
 		MaxIncomingStreams: defaultMaxStreams,
 	}
 }

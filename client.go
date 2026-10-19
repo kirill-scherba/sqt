@@ -3,6 +3,7 @@ package sqt
 import (
 	"context"
 	"crypto/tls"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -14,6 +15,12 @@ type ClientConfig struct {
 	// TLSConfig is used for the handshake. When nil, the system roots are
 	// used. NextProtos is set by the package.
 	TLSConfig *tls.Config
+	// KeepAlivePeriod is how often a PING is sent when the connection is
+	// idle. Zero means DefaultKeepAlivePeriod.
+	KeepAlivePeriod time.Duration
+	// IdleTimeout is offered to the peer; the effective value is the minimum
+	// of both sides. Zero means DefaultIdleTimeout.
+	IdleTimeout time.Duration
 }
 
 // Dial establishes a QUIC connection to the server.
@@ -30,7 +37,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Peer, error) {
 		tlsConf.NextProtos = []string{ALPN}
 	}
 
-	conn, err := quic.DialAddr(ctx, cfg.Addr, tlsConf, defaultQUICConfig())
+	conn, err := quic.DialAddr(ctx, cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
 	if err != nil {
 		return nil, err
 	}

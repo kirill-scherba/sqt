@@ -16,6 +16,12 @@
   Previously a server started with stdin at EOF closed immediately.
 - `Peer.Err()` reports why a connection ended; the client prints the lifetime
   and the reason (`idle timeout`, `remote application close`, transport error).
+- `-keepalive` and `-idle` flags on both applications, and matching
+  `KeepAlivePeriod` / `IdleTimeout` fields in the library configs.
+- Observed in the wild: a remote Windows client loses the path after the first
+  exchange and reports `timeout: no recent network activity`. The QUIC layer
+  stops receiving packets, so the cause is the UDP path (filtering, NAT or
+  provider policy), not the application.
 - Unit/integration tests: `go test ./...` green.
 - End-to-end manual run verified in both directions: client `from client` →
   server, server `1, hi there` → client, client reply → server, disconnect

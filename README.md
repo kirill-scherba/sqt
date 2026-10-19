@@ -101,6 +101,12 @@ Run the client:
 ./bin/sqt-client -addr 127.0.0.1:4433 -insecure   # self-signed server
 ```
 
+Both applications accept `-keepalive` and `-idle` to tune the QUIC timers:
+
+```sh
+./bin/sqt-client -addr sqt.example.com:4433 -keepalive 5s -idle 30s
+```
+
 Server console:
 
 ```
@@ -149,6 +155,13 @@ Keepalive is what keeps NAT mappings alive. If the server process is stopped —
 even by a stop signal such as SIGTTIN when a background process reads from a
 terminal — packets stop being answered and the client sees an idle timeout
 about a minute later.
+
+If messages stop flowing in one direction while the connection is still fresh,
+the UDP path is being filtered somewhere between the hosts. Cheap checks:
+another port (`:443` is treated best by middleboxes), a shorter keepalive
+(`-keepalive 5s`), and the server log for the matching disconnect reason. When
+filtering is persistent, QUIC cannot get through at all and the transport has
+to be TCP/TLS.
 
 ## Limits
 
