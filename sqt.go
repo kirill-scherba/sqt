@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlog"
 )
 
 const (
@@ -62,5 +63,8 @@ func quicConfig(keepAlive, idle time.Duration) *quic.Config {
 		KeepAlivePeriod:    keepAlive,
 		MaxIdleTimeout:     idle,
 		MaxIncomingStreams: defaultMaxStreams,
+		// Writes qlog files when the QLOGDIR environment variable is set and
+		// stays inert otherwise.
+		Tracer: qlog.DefaultConnectionTracer,
 	}
 }
