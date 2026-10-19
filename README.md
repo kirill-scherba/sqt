@@ -67,9 +67,10 @@ for msg := range peer.Messages() {
 choice when UDP passes: lower latency, no head-of-line blocking, cheap
 multiplexing.
 
-`-network tcp` carries messages over a single TLS connection, each message as a
-4-byte big-endian length followed by the payload. On the wire it looks like
-ordinary HTTPS, so it survives networks that recognise and throttle QUIC.
+`-network tcp` carries messages over a single TLS connection. Each frame is a
+4-byte big-endian length, a 1-byte type and the payload; the length covers the
+type byte and the payload. On the wire it looks like ordinary HTTPS, so it
+survives networks that recognise and throttle QUIC.
 
 ```sh
 ./bin/sqt-server -network tcp -addr :4433 -cert fullchain.pem -key privkey.pem
@@ -80,6 +81,44 @@ The message API is identical; only the transport changes. QUIC keepalive and
 idle timeouts are configurable; on TCP the transport enables the operating
 system keepalive (30s) so an idle connection keeps its NAT mapping and does not
 silently die while the server has nothing to send.
+
+## Heartbeat and reconnect
+
+Every peer sends a `ping` frame after 30 seconds without outgoing traffic and
+expects a `pong` within 10 seconds. If the pong does not arrive, the connection
+is closed with `ErrHeartbeatTimeout`. Ping and pong frames are handled by the
+library and never reach `Messages()`.
+
+This works for both transports. It is not a replacement for QUIC keepalive or
+TCP keepalive: those send packets, and some middleboxes only count application
+payload as activity.
+
+`NewClient` adds automatic reconnection on top of `Dial`:
+
+```go
+client := sqt.NewClient(sqt.ClientConfig{
+    Addr:      "server.example.com:4433",
+    Network:   "tcp",
+    TLSConfig: tlsConfig,
+})
+client.OnRetry = func(err error, delay time.Duration) {
+    log.Printf("reconnecting in %s: %v", delay, err)
+}
+client.Run(ctx, func(ctx context.Context, peer *sqt.Peer) {
+    for msg := range peer.Messages() {
+        // handle a command; return when the connection is gone
+    }
+})
+```
+
+Backoff starts at one second, doubles to thirty and carries up to 20% jitter;
+it resets after a minute of stable work. `Run` calls the handler once per
+established connection, so the handler must return when the peer is closed.
+The library does not queue messages typed while disconnected and does not
+deduplicate commands; those are application concerns.
+
+The frame format changed when the type byte was added. Rebuild both the server
+and the client; old and new binaries cannot talk to each other.
 
 ## Test applications
 

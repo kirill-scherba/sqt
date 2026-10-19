@@ -15,8 +15,11 @@ import (
 // block the accept loop forever.
 const tcpHandshakeTimeout = 10 * time.Second
 
-// tcpTransport carries messages over a single TLS connection. Each message is
-// a 4-byte big-endian length followed by the payload. Writes are serialized
+// tcpTransport carries frames over a single TLS connection:
+//
+//	[4 bytes big-endian length][1 byte type][payload]
+//
+// The length covers the type byte and the payload. Writes are serialized
 // because several goroutines may call Send.
 type tcpTransport struct {
 	conn net.Conn
@@ -29,10 +32,9 @@ func newTCPTransport(conn net.Conn) *tcpTransport {
 	return &tcpTransport{conn: conn, r: bufio.NewReader(conn)}
 }
 
-// enableKeepAlive asks the kernel to probe an idle TCP connection. Without it
-// a NAT or firewall may silently drop the mapping while the application has
-// nothing to send, and a server that pushes commands hours later would write
-// into a dead connection.
+// enableKeepAlive asks the kernel to probe an idle TCP connection. It does not
+// replace the application heartbeat: some middleboxes only treat payload as
+// activity.
 func enableKeepAlive(conn net.Conn) {
 	if tlsConn, ok := conn.(*tls.Conn); ok {
 		conn = tlsConn.NetConn()
@@ -47,8 +49,8 @@ func enableKeepAlive(conn net.Conn) {
 	_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 }
 
-func (t *tcpTransport) Send(ctx context.Context, msg []byte) error {
-	if len(msg) > MaxMessageSize {
+func (t *tcpTransport) Send(ctx context.Context, typ frameType, payload []byte) error {
+	if len(payload) > MaxMessageSize {
 		return ErrMessageTooLarge
 	}
 
@@ -58,8 +60,9 @@ func (t *tcpTransport) Send(ctx context.Context, msg []byte) error {
 		_ = t.conn.SetWriteDeadline(time.Time{})
 	}
 
-	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(msg)))
+	var header [5]byte
+	binary.BigEndian.PutUint32(header[:4], uint32(len(payload)+1))
+	header[4] = byte(typ)
 
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
@@ -67,34 +70,41 @@ func (t *tcpTransport) Send(ctx context.Context, msg []byte) error {
 	if _, err := t.conn.Write(header[:]); err != nil {
 		return err
 	}
-	if _, err := t.conn.Write(msg); err != nil {
-		return err
+	if len(payload) > 0 {
+		if _, err := t.conn.Write(payload); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (t *tcpTransport) Receive(ctx context.Context) ([]byte, error) {
+func (t *tcpTransport) Receive(ctx context.Context) (frameType, []byte, error) {
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = t.conn.SetReadDeadline(deadline)
 	} else {
 		_ = t.conn.SetReadDeadline(time.Time{})
 	}
 
-	var header [4]byte
+	var header [5]byte
 	if _, err := io.ReadFull(t.r, header[:]); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
-	size := binary.BigEndian.Uint32(header[:])
-	if size > MaxMessageSize {
-		return nil, ErrMessageTooLarge
+	size := binary.BigEndian.Uint32(header[:4])
+	if size == 0 {
+		return 0, nil, errEmptyFrame
+	}
+	if size > MaxMessageSize+1 {
+		return 0, nil, ErrMessageTooLarge
 	}
 
-	buf := make([]byte, size)
-	if _, err := io.ReadFull(t.r, buf); err != nil {
-		return nil, err
+	payload := make([]byte, size-1)
+	if len(payload) > 0 {
+		if _, err := io.ReadFull(t.r, payload); err != nil {
+			return 0, nil, err
+		}
 	}
-	return buf, nil
+	return frameType(header[4]), payload, nil
 }
 
 func (t *tcpTransport) Close() error { return t.conn.Close() }

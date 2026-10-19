@@ -2,18 +2,30 @@ package sqt
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 
 	"github.com/quic-go/quic-go"
 )
 
-// transport is one established connection to a peer. QUIC and TCP implement
-// it differently: QUIC opens a stream per message, TCP writes length-prefixed
-// frames on a single connection.
+// frameType marks what a frame carries. Data frames become messages; ping and
+// pong frames are consumed by the library and never reach Messages.
+type frameType byte
+
+const (
+	frameData frameType = 1
+	framePing frameType = 2
+	framePong frameType = 3
+)
+
+var errEmptyFrame = errors.New("sqt: empty frame")
+
+// transport is one established connection to a peer. QUIC opens a stream per
+// frame, TCP writes length-prefixed frames on a single connection.
 type transport interface {
-	Send(ctx context.Context, msg []byte) error
-	Receive(ctx context.Context) ([]byte, error)
+	Send(ctx context.Context, typ frameType, payload []byte) error
+	Receive(ctx context.Context) (frameType, []byte, error)
 	Close() error
 	RemoteAddr() net.Addr
 }
@@ -29,25 +41,46 @@ type quicTransport struct {
 	conn *quic.Conn
 }
 
-func (t *quicTransport) Send(ctx context.Context, msg []byte) error {
+func (t *quicTransport) Send(ctx context.Context, typ frameType, msg []byte) error {
 	st, err := t.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return err
 	}
-	if _, err := st.Write(msg); err != nil {
+
+	if _, err := st.Write([]byte{byte(typ)}); err != nil {
 		st.CancelWrite(0)
 		return err
+	}
+	if len(msg) > 0 {
+		if _, err := st.Write(msg); err != nil {
+			st.CancelWrite(0)
+			return err
+		}
 	}
 	return st.Close()
 }
 
-func (t *quicTransport) Receive(ctx context.Context) ([]byte, error) {
+func (t *quicTransport) Receive(ctx context.Context) (frameType, []byte, error) {
 	st, err := t.conn.AcceptStream(ctx)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer st.Close()
-	return readMessage(st)
+
+	// One byte of type plus at most MaxMessageSize of payload.
+	data, err := io.ReadAll(io.LimitReader(st, MaxMessageSize+2))
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(data) == 0 {
+		return 0, nil, errEmptyFrame
+	}
+
+	payload := data[1:]
+	if len(payload) > MaxMessageSize {
+		return 0, nil, ErrMessageTooLarge
+	}
+	return frameType(data[0]), payload, nil
 }
 
 func (t *quicTransport) Close() error {
@@ -55,17 +88,6 @@ func (t *quicTransport) Close() error {
 }
 
 func (t *quicTransport) RemoteAddr() net.Addr { return t.conn.RemoteAddr() }
-
-func readMessage(st *quic.Stream) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(st, MaxMessageSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > MaxMessageSize {
-		return nil, ErrMessageTooLarge
-	}
-	return data, nil
-}
 
 type quicListener struct {
 	ln *quic.Listener

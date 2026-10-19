@@ -16,6 +16,12 @@
   Previously a server started with stdin at EOF closed immediately.
 - `Peer.Err()` reports why a connection ended; the client prints the lifetime
   and the reason (`idle timeout`, `remote application close`, transport error).
+- Typed frames (data/ping/pong) in both transports. Wire format changed:
+  server and client must be rebuilt together.
+- Heartbeat: 30s interval, 10s pong timeout, works for QUIC and TCP. Closes the
+  connection with `ErrHeartbeatTimeout` instead of waiting for a kernel timeout.
+- `sqt.Client` with `Run` and automatic reconnect: 1s to 30s exponential
+  backoff with jitter, reset after a minute of stable work. Covering tests.
 - `-keepalive` and `-idle` flags on both applications, and matching
   `KeepAlivePeriod` / `IdleTimeout` fields in the library configs.
 - Observed in the wild: a remote Windows client loses the path after the first

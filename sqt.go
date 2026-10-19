@@ -44,6 +44,9 @@ var (
 
 	// ErrUnknownNetwork is returned for an unsupported transport name.
 	ErrUnknownNetwork = errors.New("sqt: unknown network")
+
+	// ErrHeartbeatTimeout is returned when the peer stops answering pings.
+	ErrHeartbeatTimeout = errors.New("sqt: heartbeat timeout")
 )
 
 const (

@@ -253,3 +253,89 @@ func TestUnknownNetwork(t *testing.T) {
 		t.Fatalf("dial: got %v, want ErrUnknownNetwork", err)
 	}
 }
+
+func TestHeartbeatKeepsIdleConnection(t *testing.T) {
+	oldInterval, oldTimeout := heartbeatInterval, heartbeatTimeout
+	heartbeatInterval = 100 * time.Millisecond
+	heartbeatTimeout = 250 * time.Millisecond
+	t.Cleanup(func() {
+		heartbeatInterval = oldInterval
+		heartbeatTimeout = oldTimeout
+	})
+
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		serverPeer := acceptPeer(t, srv)
+
+		// Several heartbeat cycles with no application traffic.
+		time.Sleep(1200 * time.Millisecond)
+
+		select {
+		case <-client.Done():
+			t.Fatalf("client closed: %v", client.Err())
+		case <-serverPeer.Done():
+			t.Fatalf("server peer closed: %v", serverPeer.Err())
+		default:
+		}
+
+		select {
+		case msg := <-client.Messages():
+			t.Fatalf("heartbeat frame leaked into messages: %q", msg)
+		default:
+		}
+
+		if err := client.Send(ctx, []byte("still alive")); err != nil {
+			t.Fatalf("send after idle: %v", err)
+		}
+		if got := string(receive(t, serverPeer.Messages())); got != "still alive" {
+			t.Fatalf("got %q, want %q", got, "still alive")
+		}
+	})
+}
+
+func TestClientReconnects(t *testing.T) {
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+
+		client := NewClient(ClientConfig{
+			Addr:    srv.Addr().String(),
+			Network: network,
+			TLSConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				MinVersion:         tls.VersionTLS13,
+			},
+		})
+
+		handlers := make(chan struct{}, 4)
+		go func() {
+			_ = client.Run(ctx, func(ctx context.Context, p *Peer) {
+				handlers <- struct{}{}
+				<-p.Done()
+			})
+		}()
+
+		first := acceptPeer(t, srv)
+		waitSignal(t, handlers, "first handler")
+
+		if err := first.Close(); err != nil {
+			t.Fatalf("close first peer: %v", err)
+		}
+
+		second := acceptPeer(t, srv)
+		if second.ID() == first.ID() {
+			t.Fatalf("expected a new peer id, got %s", second.ID())
+		}
+		waitSignal(t, handlers, "second handler")
+	})
+}
+
+func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}

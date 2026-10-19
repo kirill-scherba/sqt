@@ -1,5 +1,6 @@
-// Command client is a test application built on the sqt package. It dials the
-// server, prints every received message and sends a reply back.
+// Command client is a test application built on the sqt package. It connects
+// to the server, reconnects automatically when the connection drops, prints
+// every received message and sends a reply back.
 package main
 
 import (
@@ -38,77 +39,82 @@ func main() {
 		tlsConf.ServerName = *serverName
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	peer, err := sqt.Dial(dialCtx, sqt.ClientConfig{
+	client := sqt.NewClient(sqt.ClientConfig{
 		Addr:            *addr,
 		Network:         *network,
 		TLSConfig:       tlsConf,
 		KeepAlivePeriod: *keepAlive,
 		IdleTimeout:     *idle,
 	})
-	cancel()
-	if err != nil {
-		log.Fatalf("dial: %v", err)
-	}
-	defer peer.Close()
 
-	effectiveKeepAlive := *keepAlive
-	if effectiveKeepAlive == 0 {
-		effectiveKeepAlive = sqt.DefaultKeepAlivePeriod
-	}
-	effectiveIdle := *idle
-	if effectiveIdle == 0 {
-		effectiveIdle = sqt.DefaultIdleTimeout
-	}
-
-	log.Printf("connected to %s over %s (keepalive %s, idle timeout %s)",
-		*addr, *network, effectiveKeepAlive, effectiveIdle)
-	connectedAt := time.Now()
-
-	go func() {
-		<-ctx.Done()
-		_ = peer.Close()
-	}()
-
-	go console(ctx, peer)
-
-	for msg := range peer.Messages() {
-		log.Printf("received: %s", msg)
-
-		out := *reply
-		if out == "" {
-			out = "reply: " + string(msg)
-		}
-
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := peer.Send(sendCtx, []byte(out))
-		cancel()
+	client.OnRetry = func(err error, delay time.Duration) {
 		if err != nil {
-			log.Printf("send reply: %v", err)
-			continue
+			log.Printf("connection lost: %v; reconnecting in %s", err, delay.Round(time.Millisecond))
+			return
 		}
-		log.Printf("reply sent: %s", out)
+		log.Printf("reconnecting in %s", delay.Round(time.Millisecond))
 	}
 
-	reportClosed(peer, connectedAt)
-}
+	input := make(chan string, 16)
+	go readInput(ctx, stop, input)
 
-// reportClosed prints why the connection ended. The reason matters: an idle
-// timeout means the path went silent, a transport error means a network reset,
-// and a remote application close means the server shut the connection down.
-func reportClosed(peer *sqt.Peer, connectedAt time.Time) {
-	elapsed := time.Since(connectedAt).Round(time.Second)
-	if err := peer.Err(); err != nil {
-		log.Printf("disconnected after %s: %v", elapsed, err)
-		return
+	err := client.Run(ctx, func(ctx context.Context, peer *sqt.Peer) {
+		connectedAt := time.Now()
+		log.Printf("connected to %s over %s", *addr, *network)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case line, ok := <-input:
+				if !ok {
+					return
+				}
+				if !send(ctx, peer, line) {
+					return
+				}
+				log.Printf("sent: %s", line)
+
+			case msg, ok := <-peer.Messages():
+				if !ok {
+					reportClosed(peer, connectedAt)
+					return
+				}
+				log.Printf("received: %s", msg)
+
+				out := *reply
+				if out == "" {
+					out = "reply: " + string(msg)
+				}
+				if !send(ctx, peer, out) {
+					return
+				}
+				log.Printf("reply sent: %s", out)
+			}
+		}
+	})
+	if err != nil {
+		log.Fatalf("client: %v", err)
 	}
-	log.Printf("disconnected after %s", elapsed)
 }
 
-// console reads lines from stdin and sends each one to the server. Because
-// sqt is symmetric, the client can push messages at any time, not only in
-// response to an incoming message.
-func console(ctx context.Context, peer *sqt.Peer) {
+func send(ctx context.Context, peer *sqt.Peer, text string) bool {
+	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := peer.Send(sendCtx, []byte(text)); err != nil {
+		log.Printf("send: %v", err)
+		return false
+	}
+	return true
+}
+
+// readInput reads stdin once, outside the reconnect loop, so lines typed
+// while the connection is down stay queued in the channel.
+func readInput(ctx context.Context, stop context.CancelFunc, out chan<- string) {
+	defer close(out)
+
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -116,17 +122,23 @@ func console(ctx context.Context, peer *sqt.Peer) {
 			continue
 		}
 		if line == "quit" || line == "exit" {
-			_ = peer.Close()
+			stop()
 			return
 		}
-
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := peer.Send(sendCtx, []byte(line))
-		cancel()
-		if err != nil {
-			log.Printf("send: %v", err)
-			continue
+		select {
+		case out <- line:
+		case <-ctx.Done():
+			return
 		}
-		log.Printf("sent: %s", line)
 	}
+}
+
+// reportClosed prints why the connection ended.
+func reportClosed(peer *sqt.Peer, connectedAt time.Time) {
+	elapsed := time.Since(connectedAt).Round(time.Second)
+	if err := peer.Err(); err != nil {
+		log.Printf("disconnected after %s: %v", elapsed, err)
+		return
+	}
+	log.Printf("disconnected after %s", elapsed)
 }

@@ -38,15 +38,44 @@ Two transports implement one internal interface (`Send`, `Receive`, `Close`,
 **QUIC.** One bidirectional stream per message, FIN terminates it. Multiplexed,
 no head-of-line blocking, built-in keepalive and idle timeout. ALPN `sqt/1`.
 
-**TCP/TLS.** One TLS connection, messages framed as a 4-byte big-endian length
-plus payload; writes are serialized with a mutex because `Send` is safe for
-concurrent use. ALPN `sqt/1` is negotiated but framing is what matters. The
-transport is chosen with `Network: "quic"` or `"tcp"`; the zero value is QUIC.
+**TCP/TLS.** One TLS connection, frames of `[4-byte length][1-byte type]
+[payload]`; the length covers the type and the payload. Writes are serialized
+with a mutex because `Send` is safe for concurrent use. ALPN `sqt/1` is
+negotiated but framing is what matters. The transport is chosen with
+`Network: "quic"` or `"tcp"`; the zero value is QUIC.
+
+Both transports carry a type byte: `data` becomes a message, `ping` and `pong`
+are consumed by `Peer`. QUIC writes it as the first byte of the stream, TCP as
+part of the frame header.
 
 TCP is the fallback for networks that recognise QUIC and throttle it: the byte
 stream looks like HTTPS to a middlebox. The cost is head-of-line blocking and
 the loss of per-message multiplexing, which does not matter for message sizes
 this library targets.
+
+## Liveness
+
+`Peer` runs a heartbeat independent of the transport: after 30 seconds without
+outgoing traffic it sends a `ping` and expects a `pong` within 10 seconds.
+This exists because packet-level liveness is not enough. QUIC PING frames and
+TCP keepalive probes are empty packets; some networks only reset their idle
+timers on payload-bearing traffic and silently drop the flow otherwise.
+Observed on a Hetzner path: a TCP connection with keepalive armed on both ends
+died after about ten minutes of silence.
+
+A missing pong closes the connection with `ErrHeartbeatTimeout`, which gives
+`Client.Run` a reason to reconnect instead of waiting for a kernel timeout.
+
+## Reconnect
+
+`Client.Run` owns the reconnect loop, not the transports: dial, hand the peer
+to the handler, wait for the handler to return, close, back off, repeat.
+Backoff starts at one second, doubles to thirty, carries up to 20% jitter and
+resets after a minute of stable work. Messages in flight during a disconnect
+are lost, and commands may be delivered twice after a reconnect; the library
+does not pretend otherwise. Stable identity is an application concern: the
+client sends its name in the first message, the server maps it to the current
+peer.
 
 ## Connection lifecycle
 

@@ -3,6 +3,7 @@ package sqt
 import (
 	"context"
 	"crypto/tls"
+	"math/rand"
 	"net"
 	"time"
 
@@ -62,4 +63,104 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Peer, error) {
 	}
 
 	return nil, ErrUnknownNetwork
+}
+
+// Client keeps a connection alive and reconnects when it drops. It is a thin
+// loop above Dial: the transport and the message API stay the same.
+type Client struct {
+	Config ClientConfig
+	// OnRetry is called before every reconnect attempt, including the first
+	// failed dial. It may be nil.
+	OnRetry func(err error, delay time.Duration)
+}
+
+// NewClient returns a client for the given configuration.
+func NewClient(cfg ClientConfig) *Client { return &Client{Config: cfg} }
+
+// Run dials the server, calls handler for every established connection and
+// reconnects with exponential backoff until ctx is cancelled. The handler
+// must return when the peer is closed or ctx is done; Run then reconnects.
+func (c *Client) Run(ctx context.Context, handler func(context.Context, *Peer)) error {
+	const (
+		minDelay    = time.Second
+		maxDelay    = 30 * time.Second
+		stableAfter = time.Minute
+	)
+
+	delay := minDelay
+
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		peer, err := Dial(dialCtx, c.Config)
+		cancel()
+
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			wait := jitter(delay)
+			if c.OnRetry != nil {
+				c.OnRetry(err, wait)
+			}
+			if !sleepCtx(ctx, wait) {
+				return nil
+			}
+			delay = nextDelay(delay, maxDelay)
+			continue
+		}
+
+		started := time.Now()
+		handler(ctx, peer)
+		_ = peer.Close()
+
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		if time.Since(started) >= stableAfter {
+			delay = minDelay
+		}
+
+		wait := jitter(delay)
+		if c.OnRetry != nil {
+			c.OnRetry(peer.Err(), wait)
+		}
+		if !sleepCtx(ctx, wait) {
+			return nil
+		}
+		delay = nextDelay(delay, maxDelay)
+	}
+}
+
+func nextDelay(d, max time.Duration) time.Duration {
+	d *= 2
+	if d > max {
+		return max
+	}
+	return d
+}
+
+// jitter spreads reconnect attempts by up to 20% in either direction.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	delta := time.Duration(rand.Int63n(int64(d)/5 + 1))
+	if rand.Intn(2) == 0 {
+		return d + delta
+	}
+	return d - delta
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
