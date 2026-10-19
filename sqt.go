@@ -1,0 +1,54 @@
+// Package sqt implements a simple message transport on top of QUIC.
+//
+// A server listens for QUIC connections and clients dial it. Once a
+// connection is established either side can open a stream and send a
+// message; each message travels in its own bidirectional stream and is
+// terminated by FIN. Messages are opaque byte slices: the package knows
+// nothing about their meaning. Addressing, request/response semantics and
+// reconnection are left to the layer above.
+package sqt
+
+import (
+	"errors"
+	"time"
+
+	"github.com/quic-go/quic-go"
+)
+
+const (
+	// ALPN is the application protocol negotiated during the QUIC handshake.
+	ALPN = "sqt/1"
+
+	// MaxMessageSize is the maximum size of a single message in bytes.
+	MaxMessageSize = 1 << 20 // 1 MiB
+)
+
+var (
+	// ErrTLSConfigRequired is returned when no TLS configuration is supplied.
+	ErrTLSConfigRequired = errors.New("sqt: TLS config is required")
+
+	// ErrMessageTooLarge is returned when a message exceeds MaxMessageSize.
+	ErrMessageTooLarge = errors.New("sqt: message exceeds MaxMessageSize")
+
+	// ErrPeerClosed is returned when sending on a closed peer.
+	ErrPeerClosed = errors.New("sqt: peer is closed")
+
+	// ErrAddressRequired is returned when no dial address is supplied.
+	ErrAddressRequired = errors.New("sqt: address is required")
+)
+
+const (
+	defaultKeepAlivePeriod = 15 * time.Second
+	defaultIdleTimeout     = 60 * time.Second
+	defaultMaxStreams      = 1024
+	defaultMessagesBuffer  = 16
+	defaultPeersBuffer     = 64
+)
+
+func defaultQUICConfig() *quic.Config {
+	return &quic.Config{
+		KeepAlivePeriod:    defaultKeepAlivePeriod,
+		MaxIdleTimeout:     defaultIdleTimeout,
+		MaxIncomingStreams: defaultMaxStreams,
+	}
+}

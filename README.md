@@ -1,0 +1,132 @@
+# sqt — simple QUIC tunnel
+
+A small Go library for message transport between a server with a public IP and
+clients behind NAT. The client dials the server over QUIC; after that either
+side can open a stream and send a message. The library carries opaque bytes and
+knows nothing about their meaning.
+
+Two test binaries are included: `cmd/server` and `cmd/client`. They only
+demonstrate the API.
+
+## How it works
+
+```
+                 QUIC :4433, ALPN sqt/1
+  client  ────────────────────────────────►  server
+  (NAT)   ◄────────────────────────────────  (public IP)
+              stream = one message
+```
+
+The client keeps the connection alive with QUIC keepalive. Because QUIC allows
+both endpoints to open streams, the server can push a message to a client that
+is behind NAT without any port forwarding: the packets travel over the existing
+connection.
+
+Each message is carried in its own bidirectional stream. The sender writes the
+payload and closes the write side (FIN); the receiver reads until EOF. That
+gives natural framing, backpressure and multiplexing without a custom
+length-prefix protocol.
+
+## Library
+
+```go
+import "github.com/kirill-scherba/sqt"
+
+// server side
+srv, err := sqt.NewServer(sqt.ServerConfig{
+    Addr:      ":4433",
+    TLSConfig: tlsConfig, // must contain a certificate
+})
+go srv.Run(ctx)
+
+for peer := range srv.Peers() {
+    go func(p *sqt.Peer) {
+        for msg := range p.Messages() {
+            _ = p.Send(ctx, append([]byte("reply: "), msg...))
+        }
+    }(peer)
+}
+
+// client side
+peer, err := sqt.Dial(ctx, sqt.ClientConfig{
+    Addr:      "sqt.example.com:4433",
+    TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13},
+})
+for msg := range peer.Messages() {
+    log.Printf("received: %s", msg)
+    _ = peer.Send(ctx, []byte("ok"))
+}
+```
+
+`Peer` is symmetric: the same type is returned by `Dial` and handed out by
+`Server.Peers()`.
+
+## Test applications
+
+Build:
+
+```sh
+go build -o bin/sqt-server ./cmd/server
+go build -o bin/sqt-client ./cmd/client
+```
+
+On Windows, run the same commands with Go installed (binaries get the `.exe`
+suffix), or cross-compile from Linux:
+
+```sh
+GOOS=windows GOARCH=amd64 go build -o bin/sqt-server.exe ./cmd/server
+GOOS=windows GOARCH=amd64 go build -o bin/sqt-client.exe ./cmd/client
+```
+
+Run the server with a real certificate:
+
+```sh
+./bin/sqt-server -addr :4433 -cert /etc/letsencrypt/live/example.com/fullchain.pem \
+    -key /etc/letsencrypt/live/example.com/privkey.pem
+```
+
+For local testing, omit `-cert` and `-key`: the server generates a self-signed
+certificate and prints its SHA-256 fingerprint.
+
+Run the client:
+
+```sh
+./bin/sqt-client -addr sqt.example.com:4433
+./bin/sqt-client -addr 127.0.0.1:4433 -insecure   # self-signed server
+```
+
+Server console:
+
+```
+> ls
+clients: 1
+> 1, hello
+sent to 1: hello
+received from 1: reply: hello
+> quit
+```
+
+Client output:
+
+```
+connected to 127.0.0.1:4433
+received: hello
+reply sent: reply: hello
+```
+
+The client also reads stdin: every non-empty line is sent to the server
+immediately, so it can push messages without waiting for anything. `quit`
+closes the connection.
+
+```
+> from client
+sent: from client
+```
+
+## Limits
+
+- Messages are opaque byte slices, at most 1 MiB (`sqt.MaxMessageSize`).
+- No authentication, addressing, request/response correlation or reconnection —
+  those belong to the layer above.
+- The client does not learn its server-assigned ID; IDs are only visible on the
+  server side.
