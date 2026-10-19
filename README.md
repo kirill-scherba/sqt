@@ -120,6 +120,39 @@ deduplicate commands; those are application concerns.
 The frame format changed when the type byte was added. Rebuild both the server
 and the client; old and new binaries cannot talk to each other.
 
+## Command delivery
+
+`internal/delivery` is a reference implementation of at-least-once command
+delivery on top of the transport. It is used by the test applications and is
+not part of the public API.
+
+- the client sends `hello{name}` as the first message on every connection;
+- the server keeps a queue per name and sends everything unacknowledged when
+  the client says hello;
+- the client executes a command once (deduplication by id) and sends `ack{id}`;
+- the server removes the command only on ack.
+
+A lost connection or a lost ack causes a resend, not a lost command. The
+deduplication set lives in memory: it survives reconnects but not a client
+restart. Persisting it is an application decision.
+
+The test applications use this layer:
+
+```
+server> kitchen, turn on the light
+queued #1 for kitchen
+
+client> command #1: turn on the light
+```
+
+The server console addresses clients by name, the client identifies itself with
+`-name`. A command enqueued while the client is offline is delivered when it
+reconnects.
+
+The chaos test (`go test ./internal/delivery`) keeps dropping the connection
+every 250 ms while ten commands are being enqueued, and asserts that each
+command is executed exactly once on both transports.
+
 ## Test applications
 
 Build:

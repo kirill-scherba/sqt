@@ -1,6 +1,6 @@
 // Command client is a test application built on the sqt package. It connects
-// to the server, reconnects automatically when the connection drops, prints
-// every received message and sends a reply back.
+// to the server, reconnects automatically, identifies itself by name and
+// executes commands exactly once, acknowledging them to the server.
 package main
 
 import (
@@ -16,14 +16,15 @@ import (
 	"time"
 
 	"github.com/kirill-scherba/sqt"
+	"github.com/kirill-scherba/sqt/internal/delivery"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:4433", "server address (host:port)")
 	network := flag.String("network", "quic", `transport: "quic" or "tcp"`)
+	name := flag.String("name", defaultName(), "stable client name for command delivery")
 	serverName := flag.String("servername", "", "TLS SNI name when dialing an IP address")
 	insecure := flag.Bool("insecure", false, "skip TLS certificate verification")
-	reply := flag.String("reply", "", `reply text; empty means "reply: <message>"`)
 	keepAlive := flag.Duration("keepalive", 0, "QUIC keepalive period (0 = 15s)")
 	idle := flag.Duration("idle", 0, "QUIC idle timeout (0 = 60s)")
 	flag.Parse()
@@ -55,16 +56,33 @@ func main() {
 		log.Printf("reconnecting in %s", delay.Round(time.Millisecond))
 	}
 
+	deliver := delivery.NewClient(*name, func(id uint64, text string) {
+		// This is where a real application performs the command. The library
+		// sends the ack only after the handler returns, so a crash before the
+		// ack causes a redelivery after reconnect.
+		log.Printf("command #%d: %s", id, text)
+	})
+
 	input := make(chan string, 16)
 	go readInput(ctx, stop, input)
 
 	err := client.Run(ctx, func(ctx context.Context, peer *sqt.Peer) {
 		connectedAt := time.Now()
-		log.Printf("connected to %s over %s", *addr, *network)
+		log.Printf("connected to %s over %s as %s", *addr, *network, *name)
+
+		done := make(chan struct{})
+		go func() {
+			deliver.Handle(ctx, peer)
+			close(done)
+		}()
 
 		for {
 			select {
 			case <-ctx.Done():
+				return
+
+			case <-done:
+				reportClosed(peer, connectedAt)
 				return
 
 			case line, ok := <-input:
@@ -75,28 +93,20 @@ func main() {
 					return
 				}
 				log.Printf("sent: %s", line)
-
-			case msg, ok := <-peer.Messages():
-				if !ok {
-					reportClosed(peer, connectedAt)
-					return
-				}
-				log.Printf("received: %s", msg)
-
-				out := *reply
-				if out == "" {
-					out = "reply: " + string(msg)
-				}
-				if !send(ctx, peer, out) {
-					return
-				}
-				log.Printf("reply sent: %s", out)
 			}
 		}
 	})
 	if err != nil {
 		log.Fatalf("client: %v", err)
 	}
+}
+
+func defaultName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "client"
+	}
+	return host
 }
 
 func send(ctx context.Context, peer *sqt.Peer, text string) bool {

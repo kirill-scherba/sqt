@@ -1,6 +1,6 @@
 // Command server is a test application built on the sqt package. It listens
-// for QUIC clients, prints connection events and lets the operator send a
-// message to a connected client with "<id>, <text>".
+// for clients, keeps a delivery queue per client name and lets the operator
+// send a command with "<name>, <text>". Commands survive disconnects.
 package main
 
 import (
@@ -14,9 +14,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/kirill-scherba/sqt"
+	"github.com/kirill-scherba/sqt/internal/delivery"
 	"github.com/kirill-scherba/sqt/internal/devtls"
 	"golang.org/x/term"
 )
@@ -50,6 +50,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	queue := delivery.NewServer()
+	queue.OnData = func(name, text string) {
+		log.Printf("data from %s: %s", name, text)
+	}
+
 	log.Printf("listening on %s %s", srv.Network(), srv.Addr())
 
 	go func() {
@@ -62,20 +67,18 @@ func main() {
 	go func() {
 		for p := range srv.Peers() {
 			log.Printf("client %s connected (%s)", p.ID(), p.RemoteAddr())
-			go watchPeer(p)
+			go logDisconnect(p)
+			go queue.Handle(ctx, p)
 		}
 	}()
 
 	if useConsole(*consoleMode) {
 		consoleDone := make(chan struct{})
 		go func() {
-			console(ctx, srv)
+			console(queue)
 			close(consoleDone)
 		}()
 
-		// The console blocks on stdin, so wait for either it or the signal
-		// context. Returning from main terminates the process and unblocks the
-		// stdin reader.
 		select {
 		case <-consoleDone:
 		case <-ctx.Done():
@@ -86,26 +89,6 @@ func main() {
 	}
 
 	_ = srv.Close()
-}
-
-func useConsole(mode string) bool {
-	switch mode {
-	case "on":
-		return true
-	case "off":
-		return false
-	}
-
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	if fi.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	// /dev/null (and NUL on Windows) is a character device too, so ask the
-	// terminal layer whether stdin is really attached to a terminal.
-	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func tlsConfig(certFile, keyFile string) (*tls.Config, error) {
@@ -136,22 +119,37 @@ func tlsConfig(certFile, keyFile string) (*tls.Config, error) {
 	}, nil
 }
 
-func watchPeer(p *sqt.Peer) {
-	go func() {
-		<-p.Done()
-		if err := p.Err(); err != nil {
-			log.Printf("client %s disconnected: %v", p.ID(), err)
-			return
-		}
-		log.Printf("client %s disconnected", p.ID())
-	}()
-
-	for msg := range p.Messages() {
-		log.Printf("received from %s: %s", p.ID(), msg)
+func useConsole(mode string) bool {
+	switch mode {
+	case "on":
+		return true
+	case "off":
+		return false
 	}
+
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// /dev/null (and NUL on Windows) is a character device too, so ask the
+	// terminal layer whether stdin is really attached to a terminal.
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-func console(ctx context.Context, srv *sqt.Server) {
+func logDisconnect(p *sqt.Peer) {
+	<-p.Done()
+
+	if err := p.Err(); err != nil {
+		log.Printf("client %s disconnected: %v", p.ID(), err)
+		return
+	}
+	log.Printf("client %s disconnected", p.ID())
+}
+
+func console(queue *delivery.Server) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -168,36 +166,24 @@ func console(ctx context.Context, srv *sqt.Server) {
 		case "quit", "exit":
 			return
 		case "ls", "list":
-			ids := srv.PeerIDs()
-			if len(ids) == 0 {
+			names := queue.Names()
+			if len(names) == 0 {
 				fmt.Println("no clients connected")
 				continue
 			}
-			fmt.Printf("clients: %s\n", strings.Join(ids, ", "))
+			fmt.Printf("clients: %s\n", strings.Join(names, ", "))
 			continue
 		}
 
-		id, text, ok := strings.Cut(line, ",")
+		name, text, ok := strings.Cut(line, ",")
 		if !ok {
-			fmt.Println("usage: <id>, <text>")
+			fmt.Println("usage: <client-name>, <text>")
 			continue
 		}
-		id = strings.TrimSpace(id)
+		name = strings.TrimSpace(name)
 		text = strings.TrimSpace(text)
 
-		peer, ok := srv.Peer(id)
-		if !ok {
-			fmt.Printf("client %s is not connected\n", id)
-			continue
-		}
-
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := peer.Send(sendCtx, []byte(text))
-		cancel()
-		if err != nil {
-			fmt.Printf("send to %s: %v\n", id, err)
-			continue
-		}
-		fmt.Printf("sent to %s: %s\n", id, text)
+		id := queue.Enqueue(name, text)
+		fmt.Printf("queued #%d for %s\n", id, name)
 	}
 }

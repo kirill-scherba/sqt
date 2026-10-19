@@ -77,6 +77,19 @@ does not pretend otherwise. Stable identity is an application concern: the
 client sends its name in the first message, the server maps it to the current
 peer.
 
+## Command delivery
+
+The transport is deliberately dumb: it moves bytes and reconnects. Command
+delivery is a separate layer (`internal/delivery`) because it needs semantics
+the transport cannot provide — a stable client identity, a queue that outlives
+a connection, acknowledgements and deduplication.
+
+The failure model is "any connection can die at any moment". Under that model
+the only useful guarantee is at-least-once with idempotent execution: a command
+may arrive twice, but the client executes it once. The reference layer keeps
+the seen ids in memory, which covers reconnects; persistence across process
+restarts is left to the application.
+
 ## Connection lifecycle
 
 1. Client dials `host:port`; TLS verifies the server certificate (or is skipped

@@ -39,6 +39,10 @@
 
 - TCP/TLS transport (`-network tcp`): one connection, length-prefixed frames,
   serialized writes. The same `Peer` API; tests run against both transports.
+- `internal/delivery`: reference at-least-once delivery (hello/queue/ack/dedup)
+  used by both test applications. Chaos test drops the connection every 250ms
+  while commands are enqueued; each command executes exactly once on QUIC and
+  TCP.
 - `cmd/relay` (userspace UDP relay) with per-client upstream sockets, idle
   session expiry, `-v` logging and tests: forwarding in both directions,
   client separation, context cancellation.
