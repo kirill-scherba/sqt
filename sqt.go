@@ -38,17 +38,23 @@ var (
 )
 
 const (
-	defaultKeepAlivePeriod = 15 * time.Second
-	defaultIdleTimeout     = 60 * time.Second
-	defaultMaxStreams      = 1024
-	defaultMessagesBuffer  = 16
-	defaultPeersBuffer     = 64
+	// DefaultKeepAlivePeriod is how often a QUIC PING is sent when the
+	// connection is otherwise idle. It keeps NAT mappings alive.
+	DefaultKeepAlivePeriod = 15 * time.Second
+
+	// DefaultIdleTimeout is the idle timeout offered to the peer. The
+	// effective value is the minimum of both endpoints' values.
+	DefaultIdleTimeout = 60 * time.Second
+
+	defaultMaxStreams     = 1024
+	defaultMessagesBuffer = 16
+	defaultPeersBuffer    = 64
 )
 
 func defaultQUICConfig() *quic.Config {
 	return &quic.Config{
-		KeepAlivePeriod:    defaultKeepAlivePeriod,
-		MaxIdleTimeout:     defaultIdleTimeout,
+		KeepAlivePeriod:    DefaultKeepAlivePeriod,
+		MaxIdleTimeout:     DefaultIdleTimeout,
 		MaxIncomingStreams: defaultMaxStreams,
 	}
 }

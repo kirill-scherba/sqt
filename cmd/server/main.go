@@ -18,12 +18,14 @@ import (
 
 	"github.com/kirill-scherba/sqt"
 	"github.com/kirill-scherba/sqt/internal/devtls"
+	"golang.org/x/term"
 )
 
 func main() {
 	addr := flag.String("addr", ":4433", "UDP address to listen on")
 	certFile := flag.String("cert", "", "TLS certificate file (PEM)")
 	keyFile := flag.String("key", "", "TLS key file (PEM)")
+	consoleMode := flag.String("console", "auto", `console mode: "auto" (only with a terminal), "on", "off"`)
 	flag.Parse()
 
 	tlsConf, err := tlsConfig(*certFile, *keyFile)
@@ -55,21 +57,46 @@ func main() {
 		}
 	}()
 
-	consoleDone := make(chan struct{})
-	go func() {
-		console(ctx, srv)
-		close(consoleDone)
-	}()
+	if useConsole(*consoleMode) {
+		consoleDone := make(chan struct{})
+		go func() {
+			console(ctx, srv)
+			close(consoleDone)
+		}()
 
-	// The console blocks on stdin, so wait for either it or the signal
-	// context. Returning from main terminates the process and unblocks the
-	// stdin reader.
-	select {
-	case <-consoleDone:
-	case <-ctx.Done():
+		// The console blocks on stdin, so wait for either it or the signal
+		// context. Returning from main terminates the process and unblocks the
+		// stdin reader.
+		select {
+		case <-consoleDone:
+		case <-ctx.Done():
+		}
+	} else {
+		log.Printf("stdin is not a terminal, running headless (use -console on to force the console)")
+		<-ctx.Done()
 	}
 
 	_ = srv.Close()
+}
+
+func useConsole(mode string) bool {
+	switch mode {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// /dev/null (and NUL on Windows) is a character device too, so ask the
+	// terminal layer whether stdin is really attached to a terminal.
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func tlsConfig(certFile, keyFile string) (*tls.Config, error) {
@@ -103,6 +130,10 @@ func tlsConfig(certFile, keyFile string) (*tls.Config, error) {
 func watchPeer(p *sqt.Peer) {
 	go func() {
 		<-p.Done()
+		if err := p.Err(); err != nil {
+			log.Printf("client %s disconnected: %v", p.ID(), err)
+			return
+		}
 		log.Printf("client %s disconnected", p.ID())
 	}()
 

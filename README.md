@@ -88,6 +88,12 @@ Run the server with a real certificate:
 For local testing, omit `-cert` and `-key`: the server generates a self-signed
 certificate and prints its SHA-256 fingerprint.
 
+The interactive console is enabled only when stdin is a terminal. Use
+`-console on` to force it (for example when driving the server from a pipe) or
+`-console off` for a headless process. A server attached to a terminal you are
+going to close dies with that terminal; use systemd or `nohup` together with
+`-console off` instead.
+
 Run the client:
 
 ```sh
@@ -122,6 +128,27 @@ closes the connection.
 > from client
 sent: from client
 ```
+
+## When a client disconnects
+
+The client prints how long the connection lived and why it ended:
+
+```
+connected to sqt.example.com:4433 (keepalive 15s, idle timeout 1m0s)
+disconnected after 1m0s: timeout: no recent network activity
+```
+
+| Reason | Meaning |
+| --- | --- |
+| `Application error 0x0 (remote): closed` | The other side closed the connection: server shutdown, `quit`, or a crash that sent CONNECTION_CLOSE. |
+| `timeout: no recent network activity` | The idle timeout fired: nothing was received for 60s even though keepalive PINGs are sent every 15s, so the path is gone. |
+| Transport / stateless reset errors | The network reset the UDP flow, or the peer disappeared without a close frame. |
+| No reason, `disconnected after ...` | The local process closed the peer itself (signal, `quit`). |
+
+Keepalive is what keeps NAT mappings alive. If the server process is stopped —
+even by a stop signal such as SIGTTIN when a background process reads from a
+terminal — packets stop being answered and the client sees an idle timeout
+about a minute later.
 
 ## Limits
 

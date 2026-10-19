@@ -20,6 +20,10 @@ type Peer struct {
 	done     chan struct{}
 
 	closeOnce sync.Once
+
+	mu            sync.Mutex
+	closeErr      error
+	closedLocally bool
 }
 
 // newPeer wraps an established QUIC connection and starts the receive loop.
@@ -48,6 +52,19 @@ func (p *Peer) Messages() <-chan []byte { return p.messages }
 // Done is closed when the connection is closed.
 func (p *Peer) Done() <-chan struct{} { return p.done }
 
+// Err returns the reason the connection ended: an idle timeout, a transport
+// error, an application close from the remote side, or the error returned by
+// AcceptStream. It returns nil while the connection is alive and after a local
+// Close, because a local shutdown is not an error.
+func (p *Peer) Err() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closedLocally {
+		return nil
+	}
+	return p.closeErr
+}
+
 // Send opens a new bidirectional stream, writes msg to it and closes the
 // write side. Send is safe for concurrent use.
 func (p *Peer) Send(ctx context.Context, msg []byte) error {
@@ -74,6 +91,15 @@ func (p *Peer) Send(ctx context.Context, msg []byte) error {
 
 // Close terminates the connection. It is safe to call more than once.
 func (p *Peer) Close() error {
+	p.mu.Lock()
+	p.closedLocally = true
+	p.mu.Unlock()
+	return p.shutdown()
+}
+
+// shutdown closes the underlying QUIC connection. It is also called from the
+// receive loop, so it must not mark the close as local.
+func (p *Peer) shutdown() error {
 	var err error
 	p.closeOnce.Do(func() {
 		close(p.done)
@@ -91,7 +117,12 @@ func (p *Peer) readLoop() {
 	for {
 		st, err := p.conn.AcceptStream(context.Background())
 		if err != nil {
-			_ = p.Close()
+			p.mu.Lock()
+			if !p.closedLocally {
+				p.closeErr = err
+			}
+			p.mu.Unlock()
+			_ = p.shutdown()
 			return
 		}
 

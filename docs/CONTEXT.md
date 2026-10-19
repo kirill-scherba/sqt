@@ -22,6 +22,9 @@ The repository also contains two test applications built on the library:
 - Tests: exchange, ordering, size limit, shutdown propagation.
 - Both directions are exercised: the test client has a stdin console and can
   send at any time, not only as a reply.
+- `Peer.Err()` exposes the connection close reason; a local `Close` is not
+  reported as an error. The test client logs lifetime and reason.
+- The test server runs headless unless stdin is a real terminal.
 
 ## Decisions
 

@@ -39,7 +39,9 @@ func main() {
 	}
 	defer peer.Close()
 
-	log.Printf("connected to %s", *addr)
+	log.Printf("connected to %s (keepalive %s, idle timeout %s)",
+		*addr, sqt.DefaultKeepAlivePeriod, sqt.DefaultIdleTimeout)
+	connectedAt := time.Now()
 
 	go func() {
 		<-ctx.Done()
@@ -66,7 +68,19 @@ func main() {
 		log.Printf("reply sent: %s", out)
 	}
 
-	log.Printf("disconnected")
+	reportClosed(peer, connectedAt)
+}
+
+// reportClosed prints why the connection ended. The reason matters: an idle
+// timeout means the path went silent, a transport error means a network reset,
+// and a remote application close means the server shut the connection down.
+func reportClosed(peer *sqt.Peer, connectedAt time.Time) {
+	elapsed := time.Since(connectedAt).Round(time.Second)
+	if err := peer.Err(); err != nil {
+		log.Printf("disconnected after %s: %v", elapsed, err)
+		return
+	}
+	log.Printf("disconnected after %s", elapsed)
 }
 
 // console reads lines from stdin and sends each one to the server. Because

@@ -11,6 +11,11 @@
 - Messages flow in both directions: the client sends spontaneous input lines
   and automatic replies; the server receives both.
 - SIGTERM stops the server even while the console is blocked on stdin.
+- Headless mode: the server no longer depends on stdin. The console runs only
+  with a real terminal (`-console auto`), or is forced with `-console on|off`.
+  Previously a server started with stdin at EOF closed immediately.
+- `Peer.Err()` reports why a connection ended; the client prints the lifetime
+  and the reason (`idle timeout`, `remote application close`, transport error).
 - Unit/integration tests: `go test ./...` green.
 - End-to-end manual run verified in both directions: client `from client` →
   server, server `1, hi there` → client, client reply → server, disconnect

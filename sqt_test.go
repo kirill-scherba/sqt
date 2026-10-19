@@ -168,4 +168,33 @@ func TestPeerClosedAfterServerClose(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("client was not notified about the server shutdown")
 	}
+
+	if err := client.Err(); err == nil {
+		t.Fatal("expected a close reason after the server shutdown")
+	}
+}
+
+func TestLocalCloseHasNoError(t *testing.T) {
+	srv, ctx, _ := testServer(t)
+	client := dialTest(t, ctx, srv)
+
+	select {
+	case <-srv.Peers():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the server to accept the connection")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+
+	select {
+	case <-client.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("client was not marked as closed")
+	}
+
+	if err := client.Err(); err != nil {
+		t.Fatalf("local close reported an error: %v", err)
+	}
 }
