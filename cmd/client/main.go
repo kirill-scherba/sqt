@@ -20,6 +20,7 @@ import (
 func main() {
 	addr := flag.String("addr", "localhost:4433", "server address (host:port)")
 	network := flag.String("network", "quic", `transport: "quic" or "tcp"`)
+	serverName := flag.String("servername", "", "TLS SNI name when dialing an IP address")
 	insecure := flag.Bool("insecure", false, "skip TLS certificate verification")
 	reply := flag.String("reply", "", `reply text; empty means "reply: <message>"`)
 	keepAlive := flag.Duration("keepalive", 0, "QUIC keepalive period (0 = 15s)")
@@ -32,6 +33,9 @@ func main() {
 	tlsConf := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: *insecure,
+	}
+	if *serverName != "" {
+		tlsConf.ServerName = *serverName
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
