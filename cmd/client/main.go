@@ -19,6 +19,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "localhost:4433", "server address (host:port)")
+	network := flag.String("network", "quic", `transport: "quic" or "tcp"`)
 	insecure := flag.Bool("insecure", false, "skip TLS certificate verification")
 	reply := flag.String("reply", "", `reply text; empty means "reply: <message>"`)
 	keepAlive := flag.Duration("keepalive", 0, "QUIC keepalive period (0 = 15s)")
@@ -36,6 +37,7 @@ func main() {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	peer, err := sqt.Dial(dialCtx, sqt.ClientConfig{
 		Addr:            *addr,
+		Network:         *network,
 		TLSConfig:       tlsConf,
 		KeepAlivePeriod: *keepAlive,
 		IdleTimeout:     *idle,
@@ -55,8 +57,8 @@ func main() {
 		effectiveIdle = sqt.DefaultIdleTimeout
 	}
 
-	log.Printf("connected to %s (keepalive %s, idle timeout %s)",
-		*addr, effectiveKeepAlive, effectiveIdle)
+	log.Printf("connected to %s over %s (keepalive %s, idle timeout %s)",
+		*addr, *network, effectiveKeepAlive, effectiveIdle)
 	connectedAt := time.Now()
 
 	go func() {

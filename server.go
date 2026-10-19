@@ -15,22 +15,23 @@ import (
 
 // ServerConfig configures a Server.
 type ServerConfig struct {
-	// Addr is the UDP address to listen on, for example ":4433".
+	// Addr is the address to listen on, for example ":4433".
 	Addr string
+	// Network selects the transport: NetworkQUIC (default) or NetworkTCP.
+	Network string
 	// TLSConfig must contain at least one certificate. NextProtos is set by
 	// the package.
 	TLSConfig *tls.Config
-	// KeepAlivePeriod is how often a PING is sent when the connection is
-	// idle. Zero means DefaultKeepAlivePeriod.
+	// KeepAlivePeriod applies to QUIC only. Zero means DefaultKeepAlivePeriod.
 	KeepAlivePeriod time.Duration
-	// IdleTimeout is offered to the peer; the effective value is the minimum
-	// of both sides. Zero means DefaultIdleTimeout.
+	// IdleTimeout applies to QUIC only. Zero means DefaultIdleTimeout.
 	IdleTimeout time.Duration
 }
 
-// Server accepts QUIC connections and keeps track of connected peers.
+// Server accepts connections and keeps track of connected peers.
 type Server struct {
-	ln *quic.Listener
+	network string
+	ln      transportListener
 
 	peers  chan *Peer
 	closed chan struct{}
@@ -44,6 +45,14 @@ type Server struct {
 
 // NewServer starts listening on cfg.Addr.
 func NewServer(cfg ServerConfig) (*Server, error) {
+	network := cfg.Network
+	if network == "" {
+		network = NetworkQUIC
+	}
+	if network != NetworkQUIC && network != NetworkTCP {
+		return nil, ErrUnknownNetwork
+	}
+
 	if cfg.TLSConfig == nil {
 		return nil, ErrTLSConfigRequired
 	}
@@ -51,18 +60,35 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	tlsConf := cfg.TLSConfig.Clone()
 	tlsConf.NextProtos = []string{ALPN}
 
-	ln, err := quic.ListenAddr(cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
-	if err != nil {
-		return nil, err
+	var ln transportListener
+	switch network {
+	case NetworkQUIC:
+		quicLn, err := quic.ListenAddr(cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
+		if err != nil {
+			return nil, err
+		}
+		ln = &quicListener{ln: quicLn}
+	case NetworkTCP:
+		tcpLn, err := net.Listen("tcp", cfg.Addr)
+		if err != nil {
+			return nil, err
+		}
+		ln = &tcpListener{ln: tcpLn, tlsConf: tlsConf}
+	default:
+		return nil, ErrUnknownNetwork
 	}
 
 	return &Server{
-		ln:     ln,
-		peers:  make(chan *Peer, defaultPeersBuffer),
-		closed: make(chan struct{}),
-		byID:   make(map[string]*Peer),
+		network: network,
+		ln:      ln,
+		peers:   make(chan *Peer, defaultPeersBuffer),
+		closed:  make(chan struct{}),
+		byID:    make(map[string]*Peer),
 	}, nil
 }
+
+// Network returns the transport the server listens on.
+func (s *Server) Network() string { return s.network }
 
 // Addr returns the address the server is listening on. When the configured
 // port is zero, it returns the actual port chosen by the system.
@@ -99,8 +125,18 @@ func (s *Server) PeerIDs() []string {
 
 // Run accepts connections until ctx is cancelled or the server is closed.
 func (s *Server) Run(ctx context.Context) error {
+	// Neither QUIC's Accept nor TCP's Accept is interrupted by a context, so
+	// closing the listener is what unblocks them.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.ln.Close()
+		case <-s.closed:
+		}
+	}()
+
 	for {
-		conn, err := s.ln.Accept(ctx)
+		tr, err := s.ln.Accept(ctx)
 		if err != nil {
 			select {
 			case <-s.closed:
@@ -112,7 +148,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 
-		p := s.register(conn)
+		p := s.register(tr)
 
 		select {
 		case s.peers <- p:
@@ -132,6 +168,7 @@ func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		err = s.ln.Close()
+
 		s.mu.RLock()
 		peers := make([]*Peer, 0, len(s.byID))
 		for _, p := range s.byID {
@@ -145,9 +182,9 @@ func (s *Server) Close() error {
 	return err
 }
 
-func (s *Server) register(conn *quic.Conn) *Peer {
+func (s *Server) register(tr transport) *Peer {
 	id := strconv.FormatUint(s.nextID.Add(1), 10)
-	p := newPeer(id, conn)
+	p := newPeer(id, tr)
 
 	s.mu.Lock()
 	s.byID[id] = p

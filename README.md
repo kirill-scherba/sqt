@@ -1,9 +1,9 @@
 # sqt — simple QUIC tunnel
 
 A small Go library for message transport between a server with a public IP and
-clients behind NAT. The client dials the server over QUIC; after that either
-side can open a stream and send a message. The library carries opaque bytes and
-knows nothing about their meaning.
+clients behind NAT. The client dials the server over QUIC or TCP/TLS; after
+that either side can send a message. The library carries opaque bytes and knows
+nothing about their meaning.
 
 Two test binaries are included: `cmd/server` and `cmd/client`. They only
 demonstrate the API.
@@ -60,6 +60,25 @@ for msg := range peer.Messages() {
 
 `Peer` is symmetric: the same type is returned by `Dial` and handed out by
 `Server.Peers()`.
+
+## Transports
+
+`-network quic` (default) carries one message per QUIC stream. It is the best
+choice when UDP passes: lower latency, no head-of-line blocking, cheap
+multiplexing.
+
+`-network tcp` carries messages over a single TLS connection, each message as a
+4-byte big-endian length followed by the payload. On the wire it looks like
+ordinary HTTPS, so it survives networks that recognise and throttle QUIC.
+
+```sh
+./bin/sqt-server -network tcp -addr :4433 -cert fullchain.pem -key privkey.pem
+./bin/sqt-client -network tcp -addr server.example.com:4433
+```
+
+The message API is identical; only the transport changes. Keepalive and idle
+timeouts apply to QUIC only: TCP connections are kept alive by the operating
+system and the application's own traffic.
 
 ## Test applications
 

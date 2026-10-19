@@ -31,6 +31,8 @@
   server, server `1, hi there` → client, client reply → server, disconnect
   event.
 
+- TCP/TLS transport (`-network tcp`): one connection, length-prefixed frames,
+  serialized writes. The same `Peer` API; tests run against both transports.
 - `cmd/relay` (userspace UDP relay) with per-client upstream sockets, idle
   session expiry, `-v` logging and tests: forwarding in both directions,
   client separation, context cancellation.

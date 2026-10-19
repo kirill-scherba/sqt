@@ -17,8 +17,13 @@ import (
 )
 
 const (
-	// ALPN is the application protocol negotiated during the QUIC handshake.
+	// ALPN is the application protocol negotiated during the TLS handshake.
 	ALPN = "sqt/1"
+
+	// NetworkQUIC carries one message per QUIC stream.
+	NetworkQUIC = "quic"
+	// NetworkTCP carries length-prefixed messages over one TLS connection.
+	NetworkTCP = "tcp"
 
 	// MaxMessageSize is the maximum size of a single message in bytes.
 	MaxMessageSize = 1 << 20 // 1 MiB
@@ -36,6 +41,9 @@ var (
 
 	// ErrAddressRequired is returned when no dial address is supplied.
 	ErrAddressRequired = errors.New("sqt: address is required")
+
+	// ErrUnknownNetwork is returned for an unsupported transport name.
+	ErrUnknownNetwork = errors.New("sqt: unknown network")
 )
 
 const (

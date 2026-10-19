@@ -22,7 +22,8 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":4433", "UDP address to listen on")
+	addr := flag.String("addr", ":4433", "address to listen on")
+	network := flag.String("network", "quic", `transport: "quic" or "tcp"`)
 	certFile := flag.String("cert", "", "TLS certificate file (PEM)")
 	keyFile := flag.String("key", "", "TLS key file (PEM)")
 	consoleMode := flag.String("console", "auto", `console mode: "auto" (only with a terminal), "on", "off"`)
@@ -37,6 +38,7 @@ func main() {
 
 	srv, err := sqt.NewServer(sqt.ServerConfig{
 		Addr:            *addr,
+		Network:         *network,
 		TLSConfig:       tlsConf,
 		KeepAlivePeriod: *keepAlive,
 		IdleTimeout:     *idle,
@@ -48,7 +50,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("listening on udp %s", srv.Addr())
+	log.Printf("listening on %s %s", srv.Network(), srv.Addr())
 
 	go func() {
 		if err := srv.Run(ctx); err != nil {

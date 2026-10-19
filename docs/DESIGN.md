@@ -30,6 +30,24 @@ decides what they mean.
   payload.
 - Empty messages are valid.
 
+## Transports
+
+Two transports implement one internal interface (`Send`, `Receive`, `Close`,
+`RemoteAddr`), so `Peer`, `Server` and `Dial` are transport-agnostic.
+
+**QUIC.** One bidirectional stream per message, FIN terminates it. Multiplexed,
+no head-of-line blocking, built-in keepalive and idle timeout. ALPN `sqt/1`.
+
+**TCP/TLS.** One TLS connection, messages framed as a 4-byte big-endian length
+plus payload; writes are serialized with a mutex because `Send` is safe for
+concurrent use. ALPN `sqt/1` is negotiated but framing is what matters. The
+transport is chosen with `Network: "quic"` or `"tcp"`; the zero value is QUIC.
+
+TCP is the fallback for networks that recognise QUIC and throttle it: the byte
+stream looks like HTTPS to a middlebox. The cost is head-of-line blocking and
+the loss of per-message multiplexing, which does not matter for message sizes
+this library targets.
+
 ## Connection lifecycle
 
 1. Client dials `host:port`; TLS verifies the server certificate (or is skipped

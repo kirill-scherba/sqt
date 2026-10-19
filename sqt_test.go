@@ -3,13 +3,24 @@ package sqt
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kirill-scherba/sqt/internal/devtls"
 )
 
-func testServer(t *testing.T) (*Server, context.Context, context.CancelFunc) {
+var testNetworks = []string{NetworkQUIC, NetworkTCP}
+
+func forEachNetwork(t *testing.T, fn func(t *testing.T, network string)) {
+	t.Helper()
+	for _, network := range testNetworks {
+		t.Run(network, func(t *testing.T) { fn(t, network) })
+	}
+}
+
+func testServer(t *testing.T, network string) (*Server, context.Context, context.CancelFunc) {
 	t.Helper()
 
 	cert, _, err := devtls.SelfSigned()
@@ -18,7 +29,8 @@ func testServer(t *testing.T) (*Server, context.Context, context.CancelFunc) {
 	}
 
 	srv, err := NewServer(ServerConfig{
-		Addr: "127.0.0.1:0",
+		Addr:    "127.0.0.1:0",
+		Network: network,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS13,
@@ -43,11 +55,12 @@ func testServer(t *testing.T) (*Server, context.Context, context.CancelFunc) {
 	return srv, ctx, cancel
 }
 
-func dialTest(t *testing.T, ctx context.Context, srv *Server) *Peer {
+func dialTest(t *testing.T, ctx context.Context, srv *Server, network string) *Peer {
 	t.Helper()
 
 	peer, err := Dial(ctx, ClientConfig{
-		Addr: srv.Addr().String(),
+		Addr:    srv.Addr().String(),
+		Network: network,
 		TLSConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS13,
@@ -59,6 +72,18 @@ func dialTest(t *testing.T, ctx context.Context, srv *Server) *Peer {
 	t.Cleanup(func() { _ = peer.Close() })
 
 	return peer
+}
+
+func acceptPeer(t *testing.T, srv *Server) *Peer {
+	t.Helper()
+
+	select {
+	case p := <-srv.Peers():
+		return p
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the server to accept the connection")
+	}
+	return nil
 }
 
 func receive(t *testing.T, ch <-chan []byte) []byte {
@@ -77,124 +102,154 @@ func receive(t *testing.T, ch <-chan []byte) []byte {
 }
 
 func TestExchange(t *testing.T) {
-	srv, ctx, _ := testServer(t)
-	client := dialTest(t, ctx, srv)
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		serverPeer := acceptPeer(t, srv)
 
-	var serverPeer *Peer
-	select {
-	case serverPeer = <-srv.Peers():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the server to accept the connection")
-	}
+		if serverPeer.ID() == "" {
+			t.Fatal("server assigned an empty peer id")
+		}
 
-	if serverPeer.ID() == "" {
-		t.Fatal("server assigned an empty peer id")
-	}
+		if err := client.Send(ctx, []byte("hello")); err != nil {
+			t.Fatalf("client send: %v", err)
+		}
+		if got := string(receive(t, serverPeer.Messages())); got != "hello" {
+			t.Fatalf("server received %q, want %q", got, "hello")
+		}
 
-	if err := client.Send(ctx, []byte("hello")); err != nil {
-		t.Fatalf("client send: %v", err)
-	}
-	if got := string(receive(t, serverPeer.Messages())); got != "hello" {
-		t.Fatalf("server received %q, want %q", got, "hello")
-	}
-
-	if err := serverPeer.Send(ctx, []byte("world")); err != nil {
-		t.Fatalf("server send: %v", err)
-	}
-	if got := string(receive(t, client.Messages())); got != "world" {
-		t.Fatalf("client received %q, want %q", got, "world")
-	}
+		if err := serverPeer.Send(ctx, []byte("world")); err != nil {
+			t.Fatalf("server send: %v", err)
+		}
+		if got := string(receive(t, client.Messages())); got != "world" {
+			t.Fatalf("client received %q, want %q", got, "world")
+		}
+	})
 }
 
 func TestMultipleMessagesKeepOrder(t *testing.T) {
-	srv, ctx, _ := testServer(t)
-	client := dialTest(t, ctx, srv)
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		serverPeer := acceptPeer(t, srv)
 
-	var serverPeer *Peer
-	select {
-	case serverPeer = <-srv.Peers():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the server to accept the connection")
-	}
-
-	const count = 20
-	for i := range count {
-		msg := []byte{byte(i)}
-		if err := client.Send(ctx, msg); err != nil {
-			t.Fatalf("send %d: %v", i, err)
+		const count = 20
+		for i := range count {
+			msg := []byte{byte(i)}
+			if err := client.Send(ctx, msg); err != nil {
+				t.Fatalf("send %d: %v", i, err)
+			}
 		}
-	}
 
-	for i := range count {
-		got := receive(t, serverPeer.Messages())
-		if len(got) != 1 || got[0] != byte(i) {
-			t.Fatalf("message %d: got %v", i, got)
+		for i := range count {
+			got := receive(t, serverPeer.Messages())
+			if len(got) != 1 || got[0] != byte(i) {
+				t.Fatalf("message %d: got %v", i, got)
+			}
 		}
-	}
+	})
+}
+
+func TestConcurrentSends(t *testing.T) {
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		serverPeer := acceptPeer(t, srv)
+
+		const senders = 8
+		const perSender = 5
+
+		var wg sync.WaitGroup
+		for i := range senders {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				for j := range perSender {
+					msg := fmt.Sprintf("%d-%d", i, j)
+					if err := client.Send(ctx, []byte(msg)); err != nil {
+						t.Errorf("send %s: %v", msg, err)
+						return
+					}
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		seen := make(map[string]bool)
+		for range senders * perSender {
+			seen[string(receive(t, serverPeer.Messages()))] = true
+		}
+		if len(seen) != senders*perSender {
+			t.Fatalf("got %d distinct messages, want %d", len(seen), senders*perSender)
+		}
+	})
 }
 
 func TestMessageTooLarge(t *testing.T) {
-	srv, ctx, _ := testServer(t)
-	client := dialTest(t, ctx, srv)
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		acceptPeer(t, srv)
 
-	select {
-	case <-srv.Peers():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the server to accept the connection")
-	}
-
-	err := client.Send(ctx, make([]byte, MaxMessageSize+1))
-	if err != ErrMessageTooLarge {
-		t.Fatalf("got %v, want ErrMessageTooLarge", err)
-	}
+		err := client.Send(ctx, make([]byte, MaxMessageSize+1))
+		if err != ErrMessageTooLarge {
+			t.Fatalf("got %v, want ErrMessageTooLarge", err)
+		}
+	})
 }
 
 func TestPeerClosedAfterServerClose(t *testing.T) {
-	srv, ctx, _ := testServer(t)
-	client := dialTest(t, ctx, srv)
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		acceptPeer(t, srv)
 
-	select {
-	case <-srv.Peers():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the server to accept the connection")
-	}
+		if err := srv.Close(); err != nil {
+			t.Fatalf("server close: %v", err)
+		}
 
-	if err := srv.Close(); err != nil {
-		t.Fatalf("server close: %v", err)
-	}
+		select {
+		case <-client.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("client was not notified about the server shutdown")
+		}
 
-	select {
-	case <-client.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("client was not notified about the server shutdown")
-	}
-
-	if err := client.Err(); err == nil {
-		t.Fatal("expected a close reason after the server shutdown")
-	}
+		if err := client.Err(); err == nil {
+			t.Fatal("expected a close reason after the server shutdown")
+		}
+	})
 }
 
 func TestLocalCloseHasNoError(t *testing.T) {
-	srv, ctx, _ := testServer(t)
-	client := dialTest(t, ctx, srv)
+	forEachNetwork(t, func(t *testing.T, network string) {
+		srv, ctx, _ := testServer(t, network)
+		client := dialTest(t, ctx, srv, network)
+		acceptPeer(t, srv)
 
-	select {
-	case <-srv.Peers():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the server to accept the connection")
+		if err := client.Close(); err != nil {
+			t.Fatalf("client close: %v", err)
+		}
+
+		select {
+		case <-client.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("client was not marked as closed")
+		}
+
+		if err := client.Err(); err != nil {
+			t.Fatalf("local close reported an error: %v", err)
+		}
+	})
+}
+
+func TestUnknownNetwork(t *testing.T) {
+	if _, err := NewServer(ServerConfig{Addr: ":0", Network: "sctp"}); err != ErrUnknownNetwork {
+		t.Fatalf("server: got %v, want ErrUnknownNetwork", err)
 	}
 
-	if err := client.Close(); err != nil {
-		t.Fatalf("client close: %v", err)
-	}
-
-	select {
-	case <-client.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("client was not marked as closed")
-	}
-
-	if err := client.Err(); err != nil {
-		t.Fatalf("local close reported an error: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := Dial(ctx, ClientConfig{Addr: "127.0.0.1:1", Network: "sctp"}); err != ErrUnknownNetwork {
+		t.Fatalf("dial: got %v, want ErrUnknownNetwork", err)
 	}
 }

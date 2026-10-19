@@ -3,6 +3,7 @@ package sqt
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -12,21 +13,26 @@ import (
 type ClientConfig struct {
 	// Addr is the server address in host:port form.
 	Addr string
+	// Network selects the transport: NetworkQUIC (default) or NetworkTCP.
+	Network string
 	// TLSConfig is used for the handshake. When nil, the system roots are
 	// used. NextProtos is set by the package.
 	TLSConfig *tls.Config
-	// KeepAlivePeriod is how often a PING is sent when the connection is
-	// idle. Zero means DefaultKeepAlivePeriod.
+	// KeepAlivePeriod applies to QUIC only. Zero means DefaultKeepAlivePeriod.
 	KeepAlivePeriod time.Duration
-	// IdleTimeout is offered to the peer; the effective value is the minimum
-	// of both sides. Zero means DefaultIdleTimeout.
+	// IdleTimeout applies to QUIC only. Zero means DefaultIdleTimeout.
 	IdleTimeout time.Duration
 }
 
-// Dial establishes a QUIC connection to the server.
+// Dial establishes a connection to the server.
 func Dial(ctx context.Context, cfg ClientConfig) (*Peer, error) {
 	if cfg.Addr == "" {
 		return nil, ErrAddressRequired
+	}
+
+	network := cfg.Network
+	if network == "" {
+		network = NetworkQUIC
 	}
 
 	tlsConf := &tls.Config{}
@@ -37,10 +43,23 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Peer, error) {
 		tlsConf.NextProtos = []string{ALPN}
 	}
 
-	conn, err := quic.DialAddr(ctx, cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
-	if err != nil {
-		return nil, err
+	switch network {
+	case NetworkQUIC:
+		conn, err := quic.DialAddr(ctx, cfg.Addr, tlsConf, quicConfig(cfg.KeepAlivePeriod, cfg.IdleTimeout))
+		if err != nil {
+			return nil, err
+		}
+		return newPeer("", &quicTransport{conn: conn}), nil
+
+	case NetworkTCP:
+		// tls.Dialer sets ServerName from the address when it is empty.
+		dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: tlsConf}
+		conn, err := dialer.DialContext(ctx, "tcp", cfg.Addr)
+		if err != nil {
+			return nil, err
+		}
+		return newPeer("", newTCPTransport(conn)), nil
 	}
 
-	return newPeer("", conn), nil
+	return nil, ErrUnknownNetwork
 }
