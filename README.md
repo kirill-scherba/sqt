@@ -135,6 +135,34 @@ closes the connection.
 sent: from client
 ```
 
+## Relay
+
+`cmd/relay` forwards UDP datagrams between clients and a server the clients
+cannot reach directly. It is not a QUIC proxy: packets pass through untouched
+and QUIC does not notice the extra hop.
+
+```sh
+go build -o bin/sqt-relay ./cmd/relay
+
+# on the intermediate host
+./bin/sqt-relay -listen :4433 -upstream 65.х.х.х:4433 -v
+```
+
+Point the client at the relay:
+
+```sh
+./bin/sqt-client -addr relay.example.com:4433
+```
+
+Every client gets its own upstream socket, so the server sees separate
+endpoints instead of one shared address. Sessions are closed after `-idle`
+(default 2m) without traffic; the QUIC keepalive keeps them alive.
+
+TLS uses the name the client dials. If the server certificate must verify,
+point that name (A/AAAA record) at the relay: the certificate still belongs to
+the server and the check succeeds. Dialing the relay by IP literal requires
+`-insecure`, because the certificate has no IP SAN.
+
 ## When a client disconnects
 
 The client prints how long the connection lived and why it ended:

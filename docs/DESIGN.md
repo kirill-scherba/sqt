@@ -74,6 +74,25 @@ names, it puts them in the first message.
 - Broadcast and message routing.
 - Configuration files.
 
+## Relay
+
+`internal/udprelay` and `cmd/relay` forward datagrams between clients and an
+upstream server. This is deliberately not a QUIC-aware proxy: QUIC is encrypted
+end to end, so an intermediate host can only forward packets or terminate TLS.
+Forwarding is enough, because QUIC demultiplexes connections by connection ID
+and treats the relay as an ordinary NAT hop.
+
+One upstream socket per client is required: with a single shared socket all
+clients would present the same source address to the server and path handling
+would see one constantly moving endpoint. Sessions expire after an idle
+timeout; QUIC keepalive traffic refreshes them.
+
+The kernel alternative (nftables DNAT plus masquerade) is faster and needs no
+process, but requires root, `ip_forward`, conntrack and a working nftables, and
+cannot translate between address families. The userspace relay works anywhere
+Go runs, crosses IPv4 and IPv6 in either direction, needs no privileges for
+ports above 1024, and logs sessions.
+
 ## Possible next steps
 
 - Optional `Peer.Name` from a first handshake message.

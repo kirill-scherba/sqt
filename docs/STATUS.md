@@ -31,6 +31,12 @@
   server, server `1, hi there` → client, client reply → server, disconnect
   event.
 
+- `cmd/relay` (userspace UDP relay) with per-client upstream sockets, idle
+  session expiry, `-v` logging and tests: forwarding in both directions,
+  client separation, context cancellation.
+- End-to-end verified through the relay: client → relay → server, messages in
+  both directions, a 20s idle gap, clean shutdown.
+
 ## Known limitations
 
 - Max message size is 1 MiB.
