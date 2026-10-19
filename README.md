@@ -132,7 +132,9 @@ not part of the public API.
 - the client executes a command once (deduplication by id) and sends `ack{id}`;
 - the server removes the command only on ack;
 - the server retries unacknowledged commands every 3 seconds and closes a peer
-  whose send fails, which forces an immediate reconnect.
+  whose send fails, which forces an immediate reconnect;
+- commands are delivered in id order, including the batch sent after a
+  reconnect.
 
 A lost connection or a lost ack causes a resend, not a lost command. The
 deduplication set lives in memory: it survives reconnects but not a client

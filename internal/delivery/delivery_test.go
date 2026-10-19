@@ -169,3 +169,45 @@ func TestQueueKeepsUnackedCommands(t *testing.T) {
 		t.Fatalf("pending = %d, want 2", got)
 	}
 }
+
+func TestPendingDeliveredInOrder(t *testing.T) {
+	srv, ds, _ := chaosServer(t, sqt.NetworkTCP)
+
+	const count = 8
+	ids := make([]uint64, 0, count)
+	for i := range count {
+		ids = append(ids, ds.Enqueue("order", fmt.Sprintf("cmd-%d", i)))
+	}
+
+	got := make(chan uint64, count)
+	dc := NewClient("order", func(id uint64, text string) { got <- id })
+
+	client := sqt.NewClient(sqt.ClientConfig{
+		Addr:    srv.Addr().String(),
+		Network: sqt.NetworkTCP,
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS13,
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	go func() {
+		_ = client.Run(ctx, func(ctx context.Context, p *sqt.Peer) {
+			dc.Handle(ctx, p)
+		})
+	}()
+
+	for i := range count {
+		select {
+		case id := <-got:
+			if id != ids[i] {
+				t.Fatalf("command %d: got id %d, want %d", i, id, ids[i])
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out waiting for command %d", i)
+		}
+	}
+}

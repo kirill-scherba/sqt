@@ -120,9 +120,13 @@ func (s *Server) Handle(ctx context.Context, peer *sqt.Peer) {
 
 	s.mu.Lock()
 	s.peers[name] = peer
-	pending := make(map[uint64]string, len(s.pending[name]))
+	type queued struct {
+		id   uint64
+		text string
+	}
+	pending := make([]queued, 0, len(s.pending[name]))
 	for id, e := range s.pending[name] {
-		pending[id] = e.text
+		pending = append(pending, queued{id: id, text: e.text})
 	}
 	s.mu.Unlock()
 
@@ -134,8 +138,12 @@ func (s *Server) Handle(ctx context.Context, peer *sqt.Peer) {
 		s.mu.Unlock()
 	}()
 
-	for id, text := range pending {
-		if err := s.send(name, peer, id, text); err != nil {
+	// Commands must be delivered in the order they were issued, so sort by id
+	// instead of iterating the map.
+	sort.Slice(pending, func(i, j int) bool { return pending[i].id < pending[j].id })
+
+	for _, cmd := range pending {
+		if err := s.send(name, peer, cmd.id, cmd.text); err != nil {
 			_ = peer.Close()
 			return
 		}
@@ -219,12 +227,19 @@ func (s *Server) retry() {
 			continue
 		}
 		for id, e := range entries {
+			// Commands that were never sent are delivered by the sorted flush
+			// in Handle; the retry loop only covers attempted ones.
+			if e.sentAt.IsZero() {
+				continue
+			}
 			if now.Sub(e.sentAt) >= retryAfter {
 				jobs = append(jobs, job{name: name, peer: peer, id: id, text: e.text})
 			}
 		}
 	}
 	s.mu.Unlock()
+
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].id < jobs[j].id })
 
 	for _, j := range jobs {
 		if err := s.send(j.name, j.peer, j.id, j.text); err != nil {
