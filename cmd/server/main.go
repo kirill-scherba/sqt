@@ -16,7 +16,7 @@ import (
 	"syscall"
 
 	"github.com/kirill-scherba/sqt"
-	"github.com/kirill-scherba/sqt/internal/delivery"
+	"github.com/kirill-scherba/sqt/delivery"
 	"github.com/kirill-scherba/sqt/internal/devtls"
 	"golang.org/x/term"
 )

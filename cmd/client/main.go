@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/kirill-scherba/sqt"
-	"github.com/kirill-scherba/sqt/internal/delivery"
+	"github.com/kirill-scherba/sqt/delivery"
 )
 
 func main() {
