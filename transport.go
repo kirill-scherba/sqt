@@ -1,10 +1,14 @@
 package sqt
 
 import (
+	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -37,53 +41,108 @@ type transportListener interface {
 	Addr() net.Addr
 }
 
+// quicTransport carries every frame of a connection over ONE bidirectional stream:
+//
+//	[4 bytes big-endian length][1 byte type][payload]
+//
+// A stream per frame was the original shape, and it does not survive a burst: a list of a hundred
+// previews opened two hundred streams at once, hit the peer's MAX_STREAMS, blocked in OpenStreamSync and
+// timed out - which looked like "pictures hang while everything else works" (31.10.2026). The frame type
+// byte already tells what a frame is, so the stream count buys nothing.
+//
+// The stream is opened lazily, on the first frame: the server must accept connections even from a peer
+// that connects and says nothing.
 type quicTransport struct {
-	conn *quic.Conn
+	conn   *quic.Conn
+	client bool
+
+	once  sync.Once
+	st    *quic.Stream
+	stErr error
+	r     *bufio.Reader
+	wmu   sync.Mutex
+}
+
+func newQUICTransport(conn *quic.Conn, client bool) *quicTransport {
+	return &quicTransport{conn: conn, client: client}
+}
+
+// stream establishes the single stream of this connection once.
+func (t *quicTransport) stream(ctx context.Context) (*quic.Stream, error) {
+	t.once.Do(func() {
+		if t.client {
+			t.st, t.stErr = t.conn.OpenStreamSync(ctx)
+		} else {
+			t.st, t.stErr = t.conn.AcceptStream(ctx)
+		}
+		if t.stErr == nil {
+			t.r = bufio.NewReaderSize(t.st, 64<<10)
+		}
+	})
+	return t.st, t.stErr
 }
 
 func (t *quicTransport) Send(ctx context.Context, typ frameType, msg []byte) error {
-	st, err := t.conn.OpenStreamSync(ctx)
+	if len(msg) > MaxMessageSize {
+		return ErrMessageTooLarge
+	}
+	st, err := t.stream(ctx)
 	if err != nil {
 		return err
 	}
 
-	if _, err := st.Write([]byte{byte(typ)}); err != nil {
-		st.CancelWrite(0)
-		return err
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = st.SetWriteDeadline(deadline)
+	} else {
+		_ = st.SetWriteDeadline(time.Time{})
 	}
-	if len(msg) > 0 {
-		if _, err := st.Write(msg); err != nil {
-			st.CancelWrite(0)
-			return err
-		}
-	}
-	return st.Close()
+
+	frame := make([]byte, 4+1+len(msg))
+	binary.BigEndian.PutUint32(frame[:4], uint32(1+len(msg)))
+	frame[4] = byte(typ)
+	copy(frame[5:], msg)
+
+	// Several goroutines may send at once; a frame must not be interleaved with another.
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+	_, err = st.Write(frame)
+	return err
 }
 
 func (t *quicTransport) Receive(ctx context.Context) (frameType, []byte, error) {
-	st, err := t.conn.AcceptStream(ctx)
+	st, err := t.stream(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
-	defer st.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = st.SetReadDeadline(deadline)
+	} else {
+		_ = st.SetReadDeadline(time.Time{})
+	}
 
-	// One byte of type plus at most MaxMessageSize of payload.
-	data, err := io.ReadAll(io.LimitReader(st, MaxMessageSize+2))
-	if err != nil {
+	var length [4]byte
+	if _, err := io.ReadFull(t.r, length[:]); err != nil {
 		return 0, nil, err
 	}
-	if len(data) == 0 {
+	n := binary.BigEndian.Uint32(length[:])
+	if n == 0 {
 		return 0, nil, errEmptyFrame
 	}
-
-	payload := data[1:]
-	if len(payload) > MaxMessageSize {
+	if int(n) > MaxMessageSize+1 {
 		return 0, nil, ErrMessageTooLarge
 	}
-	return frameType(data[0]), payload, nil
+
+	frame := make([]byte, n)
+	if _, err := io.ReadFull(t.r, frame); err != nil {
+		return 0, nil, err
+	}
+	return frameType(frame[0]), frame[1:], nil
 }
 
 func (t *quicTransport) Close() error {
+	if t.st != nil {
+		_ = t.st.Close()
+	}
 	return t.conn.CloseWithError(0, "closed")
 }
 
@@ -98,7 +157,7 @@ func (l *quicListener) Accept(ctx context.Context) (transport, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &quicTransport{conn: conn}, nil
+	return newQUICTransport(conn, false), nil
 }
 
 func (l *quicListener) Close() error   { return l.ln.Close() }

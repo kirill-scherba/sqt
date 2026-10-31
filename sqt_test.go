@@ -1,6 +1,7 @@
 package sqt
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -338,4 +339,52 @@ func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for %s", what)
 	}
+}
+
+// A burst of many messages must arrive whole. This is the shape that broke the tunnel: a list of a
+// hundred previews, each a 64 KB answer, opened a stream per frame and hit MAX_STREAMS (31.10.2026).
+func TestBurstOfManyMessages(t *testing.T) {
+	forEachNetwork(t, func(t *testing.T, network string) {
+		const count = 300
+		const size = 64 << 10
+
+		srv, ctx, cancel := testServer(t, network)
+		defer cancel()
+		client := dialTest(t, ctx, srv, network)
+		serverPeer := acceptPeer(t, srv)
+		defer client.Close()
+
+		received := make(chan int, count)
+		go func() {
+			for body := range serverPeer.Messages() {
+				received <- len(body)
+			}
+		}()
+
+		body := bytes.Repeat([]byte("x"), size)
+		done := make(chan struct{})
+		for i := 0; i < count; i++ {
+			go func() {
+				_ = client.Send(ctx, body)
+				done <- struct{}{}
+			}()
+		}
+		for i := 0; i < count; i++ {
+			<-done
+		}
+
+		got := 0
+		deadline := time.After(30 * time.Second)
+		for got < count {
+			select {
+			case n := <-received:
+				if n != size {
+					t.Fatalf("размер сообщения %d, ждали %d", n, size)
+				}
+				got++
+			case <-deadline:
+				t.Fatalf("%s: пришло %d из %d сообщений", network, got, count)
+			}
+		}
+	})
 }

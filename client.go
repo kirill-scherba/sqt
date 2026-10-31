@@ -50,7 +50,8 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Peer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newPeer("", &quicTransport{conn: conn}), nil
+		// One stream carries every frame of this connection, opened on the first frame: see quicTransport.
+		return newPeer("", newQUICTransport(conn, true)), nil
 
 	case NetworkTCP:
 		// tls.Dialer sets ServerName from the address when it is empty.
